@@ -27,7 +27,18 @@ jobs:
           java-version: '21'
 
       - name: 配置 Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          sudo mkdir -p $ANDROID_HOME/cmdline-tools
+          cd /tmp
+          curl -sSL -o clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          sudo unzip -q clt.zip -d $ANDROID_HOME/cmdline-tools
+          sudo mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+          sudo chmod -R 755 $ANDROID_HOME
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" 2>&1 | tail -5
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
       - name: 缓存 Gradle
         uses: actions/cache@v4
@@ -41,7 +52,7 @@ jobs:
       - name: 创建 local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: 确定构建工具版本
+      - name: 确定版本号
         id: ver
         run: |
           echo "version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)" >> $GITHUB_OUTPUT
