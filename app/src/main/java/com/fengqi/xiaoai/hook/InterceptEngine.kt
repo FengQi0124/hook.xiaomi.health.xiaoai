@@ -1,0 +1,374 @@
+package com.fengqi.xiaoai.hook
+
+import com.fengqi.xiaoai.core.ChatMessage
+import com.fengqi.xiaoai.core.ChatResult
+import com.fengqi.xiaoai.core.ModelId
+import com.fengqi.xiaoai.core.ModelManager
+import com.fengqi.xiaoai.core.XLog
+import com.fengqi.xiaoai.net.AiClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * 消息拦截引擎。
+ *
+ * ## 核心流程（完全对齐 mitmproxy 脚本 xiaoai_hijack.py 的语义）
+ *
+ * ```
+ * 云端 Event ──► [分发方法 Hook]
+ *                  │
+ *                  ├─ SpeechRecognizer.RecognizeResult
+ *                  │    is_final==false ─► 放行（ASR 中间结果，忽略）
+ *                  │    is_final==true  ─► 取 origin_text + dialog_id
+ *                  │        ├─ 命中"切换模型"  ─► 标记 selection，返回模型列表文本
+ *                  │        ├─ 处于 selection    ─► 解析序号 → 切换模型 → 返回确认文本
+ *                  │        └─ 普通文本          ─► pendingQueries[dialogId] = text，放行
+ *                  │
+ *                  └─ Template.Toast / ToastStream
+ *                       小爱原生 ─► 放行
+ *                       第三方   ─► 取 pendingQueries[dialogId]
+ *                                   ├─ 空 ─► 放行（无对应提问，可能是欢迎语/公告）
+ *                                   └─ 有 ─► 挂起当前消息 → 异步调用 AI → 修改 payload.text
+ *                                            → 唤醒 → 原方法继续（手环显示替换后的文本）
+ * ```
+ *
+ * ## 为什么必须「挂起」
+ * 手环等待回答时有自己的超时。如果我们在 AI 返回后才发送响应，就等于把 AI 的网络延迟
+ * 直接叠加到用户等待时间上——这正是 mitmproxy 方案的体验。为了让体验可控：
+ *  - [AiConfig.timeoutMs] 是硬上限，默认 8s；
+ *  - 超时/异常时**必定放行原始回答**（如果 [AiConfig.fallbackToOriginal] 开启），
+ *    保证手环不会一直转圈。
+ *
+ * ## 线程模型
+ * Toast 的处理发生在宿主 App 的消息线程（多为 HandlerThread 或 native 回调线程），
+ * 阻塞它是**安全**的（不是主线程），而且这正是 mitmproxy「暂停转发」的等价实现。
+ * 但当检测到当前线程就是主线程时，会拒绝阻塞（防止 ANR），直接放行。
+ */
+internal class InterceptEngine {
+
+    companion object {
+        private const val NS_SPEECH = "SpeechRecognizer"
+        private const val NS_TEMPLATE = "Template"
+        private const val NAME_RECOGNIZE_RESULT = "RecognizeResult"
+        private const val NAME_TOAST = "Toast"
+        private const val NAME_TOAST_V2 = "ToastV2"
+        private const val NAME_TOAST_STREAM = "ToastStream"
+
+        /** 主线程判定阈值：单次等待最多 10s */
+        private const val MAX_BLOCK_MS = 10_000L
+
+        private val pendingSeq = AtomicLong(0)
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** dialog_id -> 等待 AI 结果的信号，key 为 "dialogId#seq" */
+    private val waiting = ConcurrentHashMap<String, PendingReply>()
+
+    private class PendingReply(
+        val latch: CountDownLatch,
+        @Volatile var text: String? = null,
+        @Volatile var note: String = "",
+    )
+
+    // ==================================================================
+    // 入口 1：识别结果
+    // ==================================================================
+
+    /**
+     * 处理 RecognizeResult。
+     *
+     * @return 需要「覆盖回答文本」时返回非 null 文本，否则返回 null 表示放行
+     */
+    fun onRecognizeResult(message: Any?): String? {
+        val model = AivsModel.get()
+        val payload = model.payloadOf(message) ?: return null.also { XLog.d("RecognizeResult 无 payload") }
+
+        // 中间结果直接忽略（asr.enable_partial_result = true，会有大量 is_final=false）
+        val isFinal = Reflector.getBoolean(payload, "is_final")
+        if (!isFinal) {
+            XLog.d("ASR 中间结果，忽略")
+            return null
+        }
+
+        val text = extractRecognizeText(payload)
+        if (text.isNullOrBlank()) {
+            XLog.d("RecognizeResult 未取到 origin_text，忽略")
+            return null
+        }
+
+        val dialogId = model.dialogIdOf(message).orEmpty()
+        XLog.i("识别到用户语音 [dialog=$dialogId]: $text")
+
+        ModelManager.purgeStalePending()
+
+        return when (val action = VoiceCommandHandler.onRecognize(text, dialogId)) {
+            is VoiceCommandHandler.OnRecognize.Normal -> {
+                // 普通提问：记下来，等 Toast 到来时替换
+                ModelManager.pendingQueries[dialogId] = ModelManager.PendingQuery(
+                    text = action.text,
+                    timestamp = System.currentTimeMillis(),
+                    modelKey = ModelManager.activeModel.value.key,
+                )
+                XLog.i("已记录待处理提问 [dialog=$dialogId]: ${action.text}")
+                null
+            }
+
+            is VoiceCommandHandler.OnRecognize.EnterSelection -> {
+                XLog.i("拦截：进入模型选择模式")
+                action.menuText
+            }
+
+            is VoiceCommandHandler.OnRecognize.Switched -> {
+                XLog.i("拦截：模型切换 -> ${action.model.displayName}")
+                action.replyText
+            }
+
+            is VoiceCommandHandler.OnRecognize.InvalidChoice -> {
+                XLog.i("拦截：选项无效")
+                action.replyText
+            }
+
+            VoiceCommandHandler.OnRecognize.Pass -> null
+        }
+    }
+
+    /**
+     * 提取识别文本。
+     *
+     * 优先级：results[0].origin_text > results[0].text > payload.text
+     * 与脚本一致（脚本用 origin_text，即未经 ITN 的原始识别文本）。
+     */
+    private fun extractRecognizeText(payload: Any?): String? {
+        val results = Reflector.get<Any>(payload, null, "results")
+        val list = asList(results)
+        if (list.isNotEmpty()) {
+            val first = list[0]
+            Reflector.getString(first, "origin_text")?.takeIf { it.isNotBlank() }?.let { return it }
+            Reflector.getString(first, "text")?.takeIf { it.isNotBlank() }?.let { return it }
+            // 部分版本字段名可能是 query_before_itn
+            Reflector.getString(first, "query_before_itn")?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return Reflector.getString(payload, "text")
+    }
+
+    // ==================================================================
+    // 入口 2：Toast（回答）
+    // ==================================================================
+
+    /**
+     * 处理 Template.Toast / ToastV2 / ToastStream。
+     *
+     * @param rewrite 由 Hook 层提供：把文本写回消息对象的回调
+     * @return true 表示已经（或即将）改写文本并把结果写回了对象；false 表示放行原始流程
+     */
+    fun onToast(message: Any?, rewrite: (String) -> Boolean): Boolean {
+        val model = AivsModel.get()
+        val payload = model.payloadOf(message) ?: return false
+
+        val dialogId = model.dialogIdOf(message).orEmpty()
+        val fieldName = toastTextField(message, payload)
+
+        // 情况 A：手环正在选择模式，或刚才的语音指令产生了「待覆盖文本」，
+        //        这些场景在 onRecognizeResult 里已经算好文本但无法直接写回 RecognizeResult，
+        //        因此在这里统一落地。
+        val direct = pendingDirectText.get()
+        if (direct != null) {
+            XLog.i("使用指令应答文本覆盖 Toast: ${direct.take(50)}")
+            if (rewrite(direct)) {
+                recordDialog(dialogId, "", direct, ModelId.XIAOAI.displayName, true, "语音指令")
+                return true
+            }
+            return false
+        }
+
+        // 情况 B：常规 AI 替换
+        val cfg = ModelManager.config()
+        val activeModel = ModelId.fromKey(
+            // 优先用提问时记录的模型，避免对话途中切模型导致错配
+            ModelManager.pendingQueries[dialogId]?.modelKey ?: cfg.activeModelKey
+        )
+
+        if (!activeModel.isThirdParty) {
+            XLog.d("当前为小爱同学模式，不劫持 Toast")
+            return false
+        }
+
+        val pending = ModelManager.pendingQueries.remove(dialogId)
+        if (pending == null || pending.text.isBlank()) {
+            XLog.i("Toast [dialog=$dialogId] 无对应提问文本，放行原始回答")
+            return false
+        }
+
+        val request = cfg.toChatRequest(activeModel, buildHistory()) ?: run {
+            XLog.w("${activeModel.displayName} 配置不完整（缺少 BaseUrl/APIKey/模型名），放行原始回答")
+            return false
+        }
+
+        // 主线程保护：绝不能在主线程阻塞等待
+        if (isMainThread()) {
+            XLog.w("检测到主线程调用，跳过替换以保证不 ANR")
+            return false
+        }
+
+        // ---- 挂起当前消息，异步请求 AI ----
+        val waitKey = "$dialogId#${pendingSeq.incrementAndGet()}"
+        val pendingReply = PendingReply(CountDownLatch(1))
+        waiting[waitKey] = pendingReply
+
+        val originalText = Reflector.getString(payload, fieldName).orEmpty()
+        XLog.i("开始替换 [dialog=$dialogId] 模型=${activeModel.displayName} 提问=${pending.text}")
+
+        scope.launch {
+            try {
+                val history = if (cfg.enableHistory) buildHistory() else emptyList()
+                val req = cfg.toChatRequest(activeModel, history)
+                val result = if (req == null) {
+                    ChatResult.Failure("配置不完整", fatal = true)
+                } else {
+                    AiClient.chat(req, pending.text, stream = false)
+                }
+                when (result) {
+                    is ChatResult.Success -> {
+                        pendingReply.text = result.text
+                        pendingReply.note = "AI(${result.elapsedMs}ms)"
+                    }
+                    is ChatResult.Failure -> {
+                        pendingReply.text = null
+                        pendingReply.note = "失败: ${result.reason}"
+                        XLog.w("AI 调用失败，将放行原始回答: ${result.reason}")
+                    }
+                }
+            } catch (t: Throwable) {
+                pendingReply.text = null
+                pendingReply.note = "异常: ${t.message}"
+                XLog.e("AI 调用异常", t)
+            } finally {
+                waiting.remove(waitKey)
+                pendingReply.latch.countDown()
+            }
+        }
+
+        // 等待结果，硬超时 = 配置超时 + 500ms 余量，且不超过 MAX_BLOCK_MS
+        val waitMs = (request.timeoutMs + 500).coerceAtMost(MAX_BLOCK_MS)
+        val finished = runCatching {
+            pendingReply.latch.await(waitMs, TimeUnit.MILLISECONDS)
+        }.getOrDefault(false)
+
+        val reply = if (finished) pendingReply.text else null
+
+        if (reply.isNullOrBlank()) {
+            val reason = if (finished) pendingReply.note else "等待超时(${waitMs}ms)"
+            XLog.w("未取得 AI 回答（$reason），放行原始回答")
+            recordDialog(dialogId, pending.text, originalText, activeModel.displayName, false, reason)
+            return false
+        }
+
+        // ---- 写回文本 ----
+        val ok = rewrite(reply)
+        if (ok) {
+            XLog.i("替换成功 [dialog=$dialogId]: ${reply.take(60)}")
+            recordDialog(dialogId, pending.text, reply, activeModel.displayName, true, pendingReply.note)
+            rememberHistory(pending.text, reply)
+        } else {
+            XLog.w("写回 payload.$fieldName 失败，放行原始回答")
+        }
+        return ok
+    }
+
+    /** Toast 的文本字段名：Toast 用 text，ToastStream 用 markdown_text */
+    private fun toastTextField(message: Any?, payload: Any?): String {
+        val name = AivsModel.get().nameOf(message)
+        val isStream = name == NAME_TOAST_STREAM ||
+            Reflector.fieldOf(payload?.javaClass, "markdown_text") != null
+        return if (isStream && Reflector.fieldOf(payload?.javaClass, "markdown_text") != null) {
+            "markdown_text"
+        } else {
+            "text"
+        }
+    }
+
+    // ==================================================================
+    // 指令应答的临时落地（RecognizeResult 与 Toast 之间的桥）
+    // ==================================================================
+
+    private val pendingDirectText = ThreadLocal<String?>()
+
+    /** 由 Hook 层在 RecognizeResult 被拦截后调用，暂存应答文本 */
+    fun stashDirectText(text: String?) {
+        pendingDirectText.set(text)
+    }
+
+    fun clearDirectText() {
+        pendingDirectText.remove()
+    }
+
+    // ==================================================================
+    // 上下文 / 记录
+
+    private val history = ArrayDeque<ChatMessage>()
+
+    @Synchronized
+    private fun buildHistory(): List<ChatMessage> {
+        val cfg = ModelManager.config()
+        if (!cfg.enableHistory) return emptyList()
+        val max = (cfg.historyRounds * 2).coerceIn(0, 20)
+        return if (history.size <= max) history.toList() else history.toList().takeLast(max)
+    }
+
+    @Synchronized
+    private fun rememberHistory(question: String, answer: String) {
+        if (!ModelManager.config().enableHistory) return
+        history.addLast(ChatMessage("user", question))
+        history.addLast(ChatMessage("assistant", answer))
+        while (history.size > 20) history.removeFirst()
+    }
+
+    @Synchronized
+    fun clearHistory() = history.clear()
+
+    private fun recordDialog(
+        dialogId: String,
+        question: String,
+        answer: String,
+        model: String,
+        replaced: Boolean,
+        note: String,
+    ) {
+        ModelManager.recordDialog(
+            ModelManager.DialogRecord(
+                time = System.currentTimeMillis(),
+                dialogId = dialogId,
+                question = question,
+                answer = answer,
+                model = model,
+                replaced = replaced,
+                note = note,
+            )
+        )
+    }
+
+    // ==================================================================
+    // 工具
+
+    private fun isMainThread(): Boolean =
+        runCatching { android.os.Looper.myLooper() == android.os.Looper.getMainLooper() }
+            .getOrDefault(false)
+
+    @Suppress("UNCHECKED_CAST")
+    private fun asList(value: Any?): List<Any> = when (value) {
+        is List<*> -> value.filterNotNull()
+        is Array<*> -> value.filterNotNull()
+        is java.util.Optional<*> -> if (value.isPresent) asList(value.get()) else emptyList()
+        else -> emptyList()
+    }
+
+    /** 供健康检查：目前有多少个挂起的替换任务 */
+    fun pendingCount(): Int = waiting.size
+}

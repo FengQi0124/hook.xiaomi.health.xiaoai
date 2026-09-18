@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">小爱助手增强</string>
+    <string name="xposed_description">将小米运动健康的小爱同学替换为第三方 AI（DeepSeek/智谱/自定义），支持手环语音切换模型</string>
+</resources>

@@ -1,0 +1,5 @@
+name=XiaoAi Assistant Hijack
+version=1.0.0
+versionCode=1
+author=FengQi0124
+description=小米运动健康 小爱同学语音助手劫持：接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），支持手环语音切换模型

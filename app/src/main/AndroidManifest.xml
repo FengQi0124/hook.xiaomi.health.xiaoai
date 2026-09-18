@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".XiaoAiApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.XiaoAi"
+        tools:targetApi="35">
+
+        <!-- ★ Xposed 模块声明（新版 LSPosed 使用 meta-data，旧版使用 assets/xposed_init） -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="@string/xposed_description" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposed_scope" />
+
+        <!-- ★ LSPosed 专用：最低/目标框架版本 -->
+        <meta-data
+            android:name="xposedsharedprefs"
+            android:value="true" />
+
+        <!-- 设置页（在小米运动健康内部以模块身份启动） -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.XiaoAi">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 供 Xposed 侧在本进程内直接打开的透明入口（避免跨进程启动问题） -->
+        <activity
+            android:name=".ui.LauncherProxyActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+    </application>
+
+</manifest>
