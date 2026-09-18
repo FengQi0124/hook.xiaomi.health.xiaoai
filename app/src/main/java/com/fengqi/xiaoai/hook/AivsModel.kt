@@ -73,6 +73,19 @@ internal class AivsModel private constructor() {
                 return m
             }
         }
+
+        // 消息名常量（所有版本共享）
+        const val NAME_RECOGNIZE_RESULT = "RecognizeResult"
+        const val NAME_TOAST = "Toast"
+        const val NAME_TOAST_V2 = "ToastV2"
+        const val NAME_TOAST_STREAM = "ToastStream"
+        const val NAME_STYLE_TOAST_STREAM_START = "StyleToastStreamStart"
+        const val NAME_GENERATE_SPEAK = "GenerateSpeak"
+
+        /** Template 命名空间下的所有回答类（按消息名） */
+        val ANSWER_TEMPLATE_NAMES = setOf(
+            NAME_TOAST, NAME_TOAST_V2, NAME_TOAST_STREAM, NAME_STYLE_TOAST_STREAM_START,
+        )
     }
 
     // ------------------------------------------------------------------
@@ -266,21 +279,6 @@ internal class AivsModel private constructor() {
         val ns = namespaceOf(message) ?: return false
         val name = nameOf(message) ?: return false
         return ns == "SpeechRecognizer" && name == "RecognizeResult"
-    }
-
-    companion object {
-        // 用 companion 而非 object：保持所有命名空间常量都集中在 AivsModel 里
-        const val NAME_RECOGNIZE_RESULT = "RecognizeResult"
-        const val NAME_TOAST = "Toast"
-        const val NAME_TOAST_V2 = "ToastV2"
-        const val NAME_TOAST_STREAM = "ToastStream"
-        const val NAME_STYLE_TOAST_STREAM_START = "StyleToastStreamStart"
-        const val NAME_GENERATE_SPEAK = "GenerateSpeak"
-
-        /** Template 命名空间下的所有回答类（按消息名） */
-        val ANSWER_TEMPLATE_NAMES = setOf(
-            NAME_TOAST, NAME_TOAST_V2, NAME_TOAST_STREAM, NAME_STYLE_TOAST_STREAM_START,
-        )
     }
 
     /**

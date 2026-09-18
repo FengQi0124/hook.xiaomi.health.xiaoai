@@ -35,8 +35,6 @@ import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.fengqi.xiaoai.core.AiConfig
 import com.fengqi.xiaoai.core.ModelId
@@ -78,10 +76,10 @@ fun SettingsScreen(
                     onClick = onClose,
                     modifier = Modifier.padding(end = 16.dp),
                 ) {
-                    Icon(
-                        imageVector = MiuixIcons.Close,
-                        contentDescription = "关闭",
-                        modifier = Modifier.size(20.dp),
+                    Text(
+                        text = "关闭",
+                        style = MiuixTheme.textStyles.button,
+                        color = MiuixTheme.colorScheme.primary,
                     )
                 }
             },
