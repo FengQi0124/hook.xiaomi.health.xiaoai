@@ -110,6 +110,14 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
             // 1) 让反射层拿到宿主 ClassLoader —— 这是所有后续查找的基础
             Reflector.ClassLoaderHolder.loader = lpparam.classLoader
 
+            // 1.5) Hook 跑在 com.mi.health 进程，UI 跑在 com.fengqi.xiaoai 进程。
+            //      XLog.init(ctx) 内部会用 createPackageContext 跨 uid 拿到模块自己的
+            //      filesDir，让两边日志落在同一路径。ModelManager.init 会顺带调用。
+            //      这一行只为了让"路径已就绪"出现在最早的日志里。
+            runCatching {
+                XLog.i("Hook 进程启动，包名=${lpparam.packageName} pid=${android.os.Process.myPid()}")
+            }
+
             // 2) 初始化配置（读 files/xiaoai_config.json，与设置页共享）
             runCatching { ModelManager.init(ctx) }
                 .onFailure { XLog.e("ModelManager 初始化失败", it) }
@@ -128,9 +136,10 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (ModelManager.config().injectMineEntry) {
                 runCatching { MinePageInjector.install(lpparam, ctx) }
                     .onFailure { XLog.e("注入 UI 入口失败", it) }
-            }
 
-            XLog.i("★ XiaoAi 模块已加载完成 ★ 当前模型=${ModelManager.activeModel.value.displayName}")
+                // 终乐观标记：LSPosed 接入成功
+                XLog.i("✓ XiaoAi Hook 已生效：HOST_PID=${android.os.Process.myPid()} PACKAGE=${lpparam.packageName}")
+            }
         }
     }
 

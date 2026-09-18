@@ -1,6 +1,8 @@
 package com.fengqi.xiaoai.core
 
+import android.content.Context
 import android.util.Log
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -11,10 +13,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * 为什么不用 XposedBridge.log：
  *  - XposedBridge.log 会把日志写进 Xposed 自己的 log，抓取需要 root + 特定命令；
- *  - 这里同时输出到 Logcat（TAG：XiaoAiHijack）和内存环形缓冲，方便 App 内“运行日志”页面查看。
+ *  - 这里同时输出到 Logcat（TAG：XiaoAiHijack）、内存环形缓冲、文件。
+ *
+ * 文件落盘是关键：Hook 跑在「小米运动健康」进程，UI 跑在「模块自己」进程，
+ * 两者内存完全隔离，只有文件能跨进程共享，让诊断页看到 Hook 实际做了什么。
+ *
+ * Hook 进程的 Context 是 com.mi.health 的，filesDir 是宿主 dataDir；用
+ * [Context.createPackageContext] 跨 uid 拿到模块自己的 filesDir，两边写同一份文件。
  *
  * 查看方式：
  *   adb logcat -s XiaoAiHijack:V
+ *   adb shell run-as com.fengqi.xiaoai cat /data/data/com.fengqi.xiaoai/files/xiaoai.log
  */
 object XLog {
 
@@ -25,12 +34,44 @@ object XLog {
     var verbose: Boolean = true
 
     private const val MAX_BUFFER = 300
+    private const val LOG_FILE_NAME = "xiaoai.log"
+    private const val LOG_FILE_MAX_BYTES = 512 * 1024 // 512 KB，写满轮转
 
     private val buffer = CopyOnWriteArrayList<LogEntry>()
 
     data class LogEntry(val time: String, val level: String, val message: String)
 
     private val timeFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+    private val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
+
+    @Volatile
+    private var logFile: File? = null
+
+    /**
+     * 初始化日志文件路径。由 [ModelManager.init] 在拿到 Context 后调用。
+     *
+     * 关键：Hook 进程拿到的 Context 是宿主（com.mi.health）的，写文件会落到
+     * /data/data/com.mi.health/files/，UI 进程（com.fengqi.xiaoai）没权限读。
+     * 用 [Context.createPackageContext] 拿到模块自己的 Context（不受 uid 限制），
+     * 这样 Hook 进程也能把日志写到 /data/data/com.fengqi.xiaoai/files/，
+     * UI 进程读同一路径即可。
+     */
+    fun init(context: Context) {
+        try {
+            val moduleCtx = try {
+                context.createPackageContext(
+                    "com.fengqi.xiaoai",
+                    Context.CONTEXT_IGNORE_SECURITY,
+                )
+            } catch (_: Throwable) { null } ?: context
+            val dir = moduleCtx.filesDir
+            if (!dir.exists()) dir.mkdirs()
+            logFile = File(dir, LOG_FILE_NAME)
+            Log.i(TAG, "日志文件已就绪：${logFile?.absolutePath}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "初始化日志文件失败", t)
+        }
+    }
 
     fun d(message: String) = log("D", message, null, verbose)
 
@@ -43,7 +84,7 @@ object XLog {
     private fun log(level: String, message: String, t: Throwable?, enabled: Boolean) {
         if (!enabled) return
         val text = if (t != null) "$message\n${Log.getStackTraceString(t)}" else message
-        // Logcat：即使 Tag 被系统限流也不会抛异常
+        // 1) Logcat
         runCatching {
             when (level) {
                 "E" -> Log.e(TAG, text)
@@ -52,14 +93,65 @@ object XLog {
                 else -> Log.d(TAG, text)
             }
         }
+        val timeShort = timeFmt.format(Date())
+        val timeLong = dateFmt.format(Date())
+        // 2) 内存环形缓冲（仅当前进程可见）
         runCatching {
-            buffer.add(LogEntry(timeFmt.format(Date()), level, text))
+            buffer.add(LogEntry(timeShort, level, text))
             while (buffer.size > MAX_BUFFER) buffer.removeAt(0)
+        }
+        // 3) 文件（跨进程共享）
+        runCatching {
+            val file = logFile ?: return@runCatching
+            if (file.length() > LOG_FILE_MAX_BYTES) {
+                // 简单轮转：截断保留后半段
+                val lines = file.readLines()
+                val keep = lines.takeLast(400)
+                file.writeText("")
+                keep.forEach { file.appendText("$it\n") }
+            }
+            file.appendText("$timeLong [$level] $text\n")
         }
     }
 
-    /** 读取最近日志（新的在后），供 UI 展示 */
-    fun snapshot(): List<LogEntry> = buffer.toList()
+    /**
+     * 读取日志：合并文件 + 内存，按时间倒序返回。
+     */
+    fun snapshot(): List<LogEntry> {
+        val fromFile = readFromFile()
+        val fromMem = buffer.toList()
+        val seen = HashSet<String>()
+        val merged = ArrayList<LogEntry>(fromMem.size + fromFile.size)
+        fromFile.forEach { e ->
+            val k = "${e.time}|${e.message}"
+            if (seen.add(k)) merged.add(e)
+        }
+        fromMem.forEach { e ->
+            val k = "${e.time}|${e.message}"
+            if (seen.add(k)) merged.add(e)
+        }
+        return merged
+    }
 
-    fun clear() = buffer.clear()
+    private fun readFromFile(): List<LogEntry> {
+        val file = logFile ?: return emptyList()
+        if (!file.exists() || file.length() == 0L) return emptyList()
+        return runCatching {
+            file.readLines()
+                .mapNotNull { line ->
+                    val m = Regex("^(\\S+ \\S+) \\[([DIWE])\\] (.*)$").matchEntire(line)
+                        ?: return@mapNotNull null
+                    val ts = m.groupValues[1]
+                    val lvl = m.groupValues[2]
+                    val msg = m.groupValues[3]
+                    val short = ts.substringAfter(' ').take(12)
+                    LogEntry(short, lvl, msg)
+                }
+        }.getOrDefault(emptyList())
+    }
+
+    fun clear() {
+        buffer.clear()
+        runCatching { logFile?.writeText("") }
+    }
 }

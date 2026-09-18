@@ -88,6 +88,8 @@ object ModelManager {
         if (initialized) return
         val dir = context.filesDir
         store = FileConfigStore(File(dir, "xiaoai_config.json"))
+        // 先初始化日志路径，确保后续 init 阶段的日志能落盘
+        XLog.init(context)
         val cfg = store.get()
         _configFlow.value = cfg
         _activeModel.value = cfg.activeModel()
