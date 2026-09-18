@@ -81,31 +81,23 @@ jobs:
 
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: out/*
-          generate_release_notes: true
-          body: |
-            ## XiaoAi Hijack ${{ github.ref_name }}
-
-            小米运动健康 AI 助手接管模块（LSPosed）。把「小爱同学」的回答替换为任意 OpenAI 兼容大模型。
-
-            ### v1.1.0 重要变更
-
-            - ✅ **3.57.0 兼容**：3.57.0 上 `Template.Toast` 是 App→Cloud，已自动改为按 `EventHeader` 类型筛选，只劫持真正的 Cloud→App 消息。
-            - ✅ **3.59.1 兼容**：沿用 Template.* 四个回答类型。
-            - ✅ 默认系统提示词含 `<modelname>` 占位，模型从一开始就知道自己是谁。
-            - ✅ 设置页改为顶栏 IconButton 关闭，避免被滚动条推出视口。
-            - 如果旧版没生效，**先到 LSPosed 强制停止一次小米运动健康** 再说一句话。
-
-            ### 下载
-            - `xiaoai-*-release.apk` — 日常使用
-            - `xiaoai-*-debug.apk` — 排查问题用
-
-            ### 安装
-            1. 安装 APK
-            2. LSPosed 中启用模块，作用域勾选 **小米运动健康**
-            3. **强制停止**小米运动健康
-            4. 打开 App →「我的」→「AI 助手设置」
-
-            > 需要 Android 7.0+ 与 LSPosed / EdXposed。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          V="${{ steps.ver.outputs.version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          # 用 gh CLI 上传：softprops/action-gh-release@v2 在某些环境下会失败，
+          # 走 gh release upload 更稳。注意 -R 指定仓库。
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $TAG 已存在，追加资产"
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber out/*
+          else
+            echo "创建 Release $TAG"
+            gh release create "$TAG" \
+              -R "$GITHUB_REPOSITORY" \
+              --title "XiaoAi Hijack $TAG" \
+              --generate-notes \
+              out/*
+          fi
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes"'
