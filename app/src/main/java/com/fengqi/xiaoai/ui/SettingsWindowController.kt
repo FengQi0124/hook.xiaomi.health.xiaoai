@@ -206,8 +206,12 @@ object SettingsWindowController {
         init {
             savedStateController.performAttach()
             savedStateController.performRestore(null)
-            // 自己就是 SavedStateProvider（无外部 state 可提供，返回空 bundle）
-            savedStateController.savedStateProvider = this
+            // 注册 SavedStateProvider：API 1.x 需要在 SavedStateRegistry 上注册。
+            // key 用一个稳定的常量即可；本 View 不持久化任何状态。
+            savedStateController.savedStateRegistry.registerSavedStateProvider(
+                KEY_SAVED_STATE,
+                this,
+            )
             // 监听 back 键
             setOnKeyListener { _, keyCode, event ->
                 if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
@@ -215,6 +219,10 @@ object SettingsWindowController {
                     true
                 } else false
             }
+        }
+
+        private companion object {
+            const val KEY_SAVED_STATE = "xiaoai_settings_window_state"
         }
 
         override val savedStateRegistry: SavedStateRegistry

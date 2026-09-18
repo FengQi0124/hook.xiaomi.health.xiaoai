@@ -12,6 +12,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.fengqi.xiaoai.core.ModelManager
 import com.fengqi.xiaoai.core.XLog
 import com.fengqi.xiaoai.ui.SettingsWindowController
 import de.robv.android.xposed.XC_MethodHook
