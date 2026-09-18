@@ -28,11 +28,15 @@ import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.fengqi.xiaoai.core.AiConfig
 import com.fengqi.xiaoai.core.ModelId
@@ -41,7 +45,8 @@ import com.fengqi.xiaoai.core.ProviderConfig
 /**
  * 设置页主界面（Miuix / Compose）。
  *
- * 结构：
+ * 结构（顶栏 + 卡片切换）：
+ *  - TopAppBar：左侧标题，右侧关闭按钮（Miuix 标准模式，不被 ScrollView 推出视口）
  *  - 当前模型选择（卡片，单选）
  *  - 各提供方参数（API Key / Base URL / 模型名）
  *  - 生成参数（系统提示词、超时、max_tokens、温度）
@@ -63,180 +68,187 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp)
-            .padding(top = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .verticalScroll(rememberScrollState()),
     ) {
-        // ---------------------------------------------------------- 标题
-        Text(
-            text = "AI 助手设置",
-            style = MiuixTheme.textStyles.title1,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-        Text(
-            text = "在小米运动健康里把「小爱同学」换成你自己的 AI，并可用手环语音切换模型。",
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-            modifier = Modifier.padding(start = 4.dp, bottom = 12.dp),
-        )
-
-        // ---------------------------------------------------------- 1. 当前模型
-        SmallTitle(text = "当前模型")
-        Card {
-            ModelId.entries.filter { it != ModelId.CUSTOM }
-                .forEach { model ->
-                    ModelRow(
-                        model = model,
-                        selected = model == activeModel,
-                        enabled = !model.isThirdParty || isModelReady(config, model),
-                        onSelect = { onSave(config.copy(activeModelKey = model.key)) },
+        // ---------------------------------------------------------- 顶栏
+        SmallTopAppBar(
+            title = "AI 助手设置",
+            actions = {
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.padding(end = 16.dp),
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Close,
+                        contentDescription = "关闭",
+                        modifier = Modifier.size(20.dp),
                     )
-                    HorizontalDivider()
                 }
-            ModelRow(
-                model = ModelId.CUSTOM,
-                selected = activeModel == ModelId.CUSTOM,
-                enabled = isModelReady(config, ModelId.CUSTOM),
-                onSelect = { onSave(config.copy(activeModelKey = ModelId.CUSTOM.key)) },
+            },
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+                .padding(top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // ---------------------------------------------------------- 副标题
+            Text(
+                text = "在小米运动健康里把「小爱同学」换成你自己的 AI，并可用手环语音切换模型。",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
             )
-        }
 
-        if (activeModel == ModelId.XIAOAI) {
-            HintText("小爱同学模式下不做任何拦截，走小米原生流程。")
-        } else if (!isModelReady(config, activeModel)) {
-            HintText("⚠ 当前模型缺少 API Key 或模型名，请先在下方配置，否则会放行原始回答。", warn = true)
-        }
+            // ---------------------------------------------------------- 1. 当前模型
+            SmallTitle(text = "当前模型")
+            Card {
+                ModelId.entries.filter { it != ModelId.CUSTOM }
+                    .forEach { model ->
+                        ModelRow(
+                            model = model,
+                            selected = model == activeModel,
+                            enabled = !model.isThirdParty || isModelReady(config, model),
+                            onSelect = { onSave(config.copy(activeModelKey = model.key)) },
+                        )
+                        HorizontalDivider()
+                    }
+                ModelRow(
+                    model = ModelId.CUSTOM,
+                    selected = activeModel == ModelId.CUSTOM,
+                    enabled = isModelReady(config, ModelId.CUSTOM),
+                    onSelect = { onSave(config.copy(activeModelKey = ModelId.CUSTOM.key)) },
+                )
+            }
 
-        // ---------------------------------------------------------- 2. 模型参数
-        Spacer(Modifier.height(8.dp))
-        SmallTitle(text = "模型参数")
+            if (activeModel == ModelId.XIAOAI) {
+                HintText("小爱同学模式下不做任何拦截，走小米原生流程。")
+            } else if (!isModelReady(config, activeModel)) {
+                HintText("⚠ 当前模型缺少 API Key 或模型名，请先在下方配置，否则会放行原始回答。", warn = true)
+            }
 
-        listOf(ModelId.DEEPSEEK, ModelId.ZHIPU, ModelId.CUSTOM).forEach { model ->
-            ProviderCard(
-                model = model,
-                provider = config.providerOf(model),
-                onChange = { updated ->
-                    onSave(config.copy(providers = config.providers + (model.key to updated)))
-                },
-            )
+            // ---------------------------------------------------------- 2. 模型参数
+            SmallTitle(text = "模型参数")
+
+            listOf(ModelId.DEEPSEEK, ModelId.ZHIPU, ModelId.CUSTOM).forEachIndexed { idx, model ->
+                ProviderCard(
+                    model = model,
+                    provider = config.providerOf(model),
+                    onChange = { updated ->
+                        onSave(config.copy(providers = config.providers + (model.key to updated)))
+                    },
+                )
+                if (idx != 2) Spacer(Modifier.height(8.dp))
+            }
+
+            // ---------------------------------------------------------- 3. 生成参数
+            SmallTitle(text = "生成参数")
+            Card {
+                FieldRow(
+                    label = "系统提示词",
+                    value = config.systemPrompt,
+                    singleLine = false,
+                    helper = "可用占位符：<modelname>（替换为当前模型名，如 DeepSeek / 智谱 / 自定义）",
+                    onValueChange = { onSave(config.copy(systemPrompt = it)) },
+                )
+                HorizontalDivider()
+                FieldRow(
+                    label = "超时时间（毫秒）",
+                    value = config.timeoutMs.toString(),
+                    keyboardType = KeyboardType.Number,
+                    helper = "超过该时间仍未拿到 AI 回复，就放行小爱的原始回答，避免手环卡住。建议 5000 ~ 10000。",
+                    onValueChange = { text ->
+                        text.toLongOrNull()?.let { onSave(config.copy(timeoutMs = it.coerceIn(1000L, 60000L))) }
+                    },
+                )
+                HorizontalDivider()
+                FieldRow(
+                    label = "最大 Token",
+                    value = config.maxTokens.toString(),
+                    keyboardType = KeyboardType.Number,
+                    onValueChange = { text ->
+                        text.toIntOrNull()?.let { onSave(config.copy(maxTokens = it.coerceIn(32, 4096))) }
+                    },
+                )
+                HorizontalDivider()
+                FieldRow(
+                    label = "温度",
+                    value = config.temperature.toString(),
+                    keyboardType = KeyboardType.Decimal,
+                    onValueChange = { text ->
+                        text.toDoubleOrNull()?.let { onSave(config.copy(temperature = it.coerceIn(0.0, 2.0))) }
+                    },
+                )
+            }
+
+            // ---------------------------------------------------------- 4. 手环语音
+            SmallTitle(text = "手环语音控制")
+            Card {
+                SwitchRow(
+                    title = "启用语音切换模型",
+                    summary = "对手环说「切换模型」，会直接回复模型列表供你选择。",
+                    checked = config.enableVoiceSwitch,
+                    onCheckedChange = { onSave(config.copy(enableVoiceSwitch = it)) },
+                )
+                HorizontalDivider()
+                FieldRow(
+                    label = "触发词（用逗号分隔）",
+                    value = config.switchKeywords.joinToString(","),
+                    helper = "说出的内容命中任一触发词即进入选择模式。",
+                    onValueChange = { text ->
+                        val list = text.split(',', '，')
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                        onSave(config.copy(switchKeywords = list.ifEmpty { AiConfig().switchKeywords }))
+                    },
+                )
+            }
+
+            // ---------------------------------------------------------- 5. 高级
+            SmallTitle(text = "高级")
+            Card {
+                SwitchRow(
+                    title = "多轮上下文",
+                    summary = "把最近几轮问答带给模型，让回答更连贯。",
+                    checked = config.enableHistory,
+                    onCheckedChange = { onSave(config.copy(enableHistory = it)) },
+                )
+                HorizontalDivider()
+                SwitchRow(
+                    title = "流式回答也替换",
+                    summary = "小爱同学的新版流式回答（ToastStream）同样会被替换。",
+                    checked = config.hookToastStream,
+                    onCheckedChange = { onSave(config.copy(hookToastStream = it)) },
+                )
+                HorizontalDivider()
+                SwitchRow(
+                    title = "失败时放行原始回答",
+                    summary = "超时或报错时保留小爱的原始回答而不是卡住。强烈建议开启。",
+                    checked = config.fallbackToOriginal,
+                    onCheckedChange = { onSave(config.copy(fallbackToOriginal = it)) },
+                )
+                HorizontalDivider()
+                SwitchRow(
+                    title = "在「我的」页面显示入口",
+                    summary = "在小米运动健康的「我的路线库」和「App设置」之间插入入口。",
+                    checked = config.injectMineEntry,
+                    onCheckedChange = { onSave(config.copy(injectMineEntry = it)) },
+                )
+                HorizontalDivider()
+                SwitchRow(
+                    title = "详细日志",
+                    summary = "输出调试日志，可用 adb logcat -s XiaoAiHijack:V 查看。",
+                    checked = config.verboseLog,
+                    onCheckedChange = { onSave(config.copy(verboseLog = it)) },
+                )
+            }
+
             Spacer(Modifier.height(8.dp))
-        }
-
-        // ---------------------------------------------------------- 3. 生成参数
-        Spacer(Modifier.height(4.dp))
-        SmallTitle(text = "生成参数")
-        Card {
-            FieldRow(
-                label = "系统提示词",
-                value = config.systemPrompt,
-                singleLine = false,
-                onValueChange = { onSave(config.copy(systemPrompt = it)) },
-            )
-            HorizontalDivider()
-            FieldRow(
-                label = "超时时间（毫秒）",
-                value = config.timeoutMs.toString(),
-                keyboardType = KeyboardType.Number,
-                helper = "超过该时间仍未拿到 AI 回复，就放行小爱的原始回答，避免手环卡住。建议 5000 ~ 10000。",
-                onValueChange = { text ->
-                    text.toLongOrNull()?.let { onSave(config.copy(timeoutMs = it.coerceIn(1000L, 60000L))) }
-                },
-            )
-            HorizontalDivider()
-            FieldRow(
-                label = "最大 Token",
-                value = config.maxTokens.toString(),
-                keyboardType = KeyboardType.Number,
-                onValueChange = { text ->
-                    text.toIntOrNull()?.let { onSave(config.copy(maxTokens = it.coerceIn(32, 4096))) }
-                },
-            )
-            HorizontalDivider()
-            FieldRow(
-                label = "温度",
-                value = config.temperature.toString(),
-                keyboardType = KeyboardType.Decimal,
-                onValueChange = { text ->
-                    text.toDoubleOrNull()?.let { onSave(config.copy(temperature = it.coerceIn(0.0, 2.0))) }
-                },
-            )
-        }
-
-        // ---------------------------------------------------------- 4. 手环语音
-        Spacer(Modifier.height(8.dp))
-        SmallTitle(text = "手环语音控制")
-        Card {
-            SwitchRow(
-                title = "启用语音切换模型",
-                summary = "对手环说「切换模型」，会直接回复模型列表供你选择。",
-                checked = config.enableVoiceSwitch,
-                onCheckedChange = { onSave(config.copy(enableVoiceSwitch = it)) },
-            )
-            HorizontalDivider()
-            FieldRow(
-                label = "触发词（用逗号分隔）",
-                value = config.switchKeywords.joinToString(","),
-                helper = "说出的内容命中任一触发词即进入选择模式。",
-                onValueChange = { text ->
-                    val list = text.split(',', '，')
-                        .map { it.trim() }
-                        .filter { it.isNotEmpty() }
-                    onSave(config.copy(switchKeywords = list.ifEmpty { AiConfig().switchKeywords }))
-                },
-            )
-        }
-
-        // ---------------------------------------------------------- 5. 高级
-        Spacer(Modifier.height(8.dp))
-        SmallTitle(text = "高级")
-        Card {
-            SwitchRow(
-                title = "多轮上下文",
-                summary = "把最近几轮问答带给模型，让回答更连贯。",
-                checked = config.enableHistory,
-                onCheckedChange = { onSave(config.copy(enableHistory = it)) },
-            )
-            HorizontalDivider()
-            SwitchRow(
-                title = "流式回答也替换",
-                summary = "小爱同学的新版流式回答（ToastStream）同样会被替换。",
-                checked = config.hookToastStream,
-                onCheckedChange = { onSave(config.copy(hookToastStream = it)) },
-            )
-            HorizontalDivider()
-            SwitchRow(
-                title = "失败时放行原始回答",
-                summary = "超时或报错时保留小爱的原始回答而不是卡住。强烈建议开启。",
-                checked = config.fallbackToOriginal,
-                onCheckedChange = { onSave(config.copy(fallbackToOriginal = it)) },
-            )
-            HorizontalDivider()
-            SwitchRow(
-                title = "在「我的」页面显示入口",
-                summary = "在小米运动健康的「我的路线库」和「App设置」之间插入入口。",
-                checked = config.injectMineEntry,
-                onCheckedChange = { onSave(config.copy(injectMineEntry = it)) },
-            )
-            HorizontalDivider()
-            SwitchRow(
-                title = "详细日志",
-                summary = "输出调试日志，可用 adb logcat -s XiaoAiHijack:V 查看。",
-                checked = config.verboseLog,
-                onCheckedChange = { onSave(config.copy(verboseLog = it)) },
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(
                 text = "运行诊断",
                 onClick = onOpenDiagnostics,
-                modifier = Modifier.fillMaxWidth(0.48f),
-            )
-            TextButton(
-                text = "收起",
-                onClick = onClose,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

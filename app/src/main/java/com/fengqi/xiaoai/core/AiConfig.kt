@@ -90,7 +90,7 @@ data class AiConfig(
             baseUrl = url,
             apiKey = key,
             model = mdl,
-            systemPrompt = systemPrompt,
+            systemPrompt = resolveSystemPrompt(model),
             timeoutMs = timeoutMs,
             maxTokens = maxTokens,
             temperature = temperature,
@@ -98,9 +98,24 @@ data class AiConfig(
         )
     }
 
+    /**
+     * 把系统提示词里的占位符替换成实际值。
+     *
+     * 当前支持的占位：
+     *  - `<modelname>` → 当前模型的展示名（DeepSeek / 智谱 / 自定义）。
+     *    让模型明确知道「我是谁」，避免它误以为自己是 ChatGPT。
+     *
+     * 占位语法刻意简单：`<xxx>` 形式，未来扩展 `<provider>` / `<date>` 等直接加进 regex 即可。
+     */
+    fun resolveSystemPrompt(model: ModelId): String =
+        systemPrompt.replace("<modelname>", model.displayName)
+
     companion object {
+        // 注意：默认提示词包含 `<modelname>` 占位符，会在请求时被
+        // [resolveSystemPrompt] 替换为当前模型的展示名。
         const val DEFAULT_SYSTEM_PROMPT =
-            "你是一个由第三方大模型驱动的语音助手，通过小米手环回答用户问题。" +
+            "你是一个由 <modelname> 驱动的语音助手（运行在小米手环上）。" +
+                "请始终以「<modelname>」的人设回答用户问题，不要伪装成其他公司产品。" +
                 "用户使用语音输入，可能存在错别字，请结合上下文合理理解。" +
                 "回答务必简洁，尽量控制在80字以内，不要使用 Markdown 格式，" +
                 "不要输出表情符号，因为你说的每一句话都会被读出来。"

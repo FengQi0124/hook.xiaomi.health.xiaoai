@@ -273,38 +273,38 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
             for (msg in candidates) {
                 val model = AivsModel.get()
-                val ns = model.namespaceOf(msg)
-                val name = model.nameOf(msg)
-                if (ns == null || name == null) continue
 
-                val full = "$ns.$name"
-
-                when {
-                    // ---------- ASR 识别结果 ----------
-                    ns == "SpeechRecognizer" && name == "RecognizeResult" -> {
-                        if (!isBefore) return
-                        val direct = engine.onRecognizeResult(msg)
-                        if (direct != null) {
-                            // 把应答文本暂存，等 Toast 到来时写入（手环会先显示"识别结果"，
-                            // 真正展示给用户的是随后的 Toast）
-                            engine.stashDirectText(direct)
-                            XLog.i("指令应答已暂存，等待 Toast 落地")
-                        }
+                // ---------- ASR 识别结果（所有版本都是 App→Cloud） ----------
+                if (model.isRecognizeMessage(msg)) {
+                    if (!isBefore) continue
+                    val direct = engine.onRecognizeResult(msg)
+                    if (direct != null) {
+                        // 把应答文本暂存，等 Toast 到来时写入（手环会先显示"识别结果"，
+                        // 真正展示给用户的是随后的 Toast）
+                        engine.stashDirectText(direct)
+                        XLog.i("指令应答已暂存，等待 Toast 落地")
                     }
+                    continue
+                }
 
-                    // ---------- 回答 ----------
-                    ns == "Template" && (name == "Toast" || name == "ToastV2" || name == "ToastStream") -> {
-                        if (!isBefore) return
-                        val cfg = ModelManager.config()
-                        if (name == "ToastStream" && !cfg.hookToastStream) return
+                // ---------- 回答消息（Cloud→App；3.57.0 与 3.59.1 候选不同） ----------
+                if (!model.isAnswerMessage(msg)) continue
+                if (!isBefore) continue
 
-                        val handled = engine.onToast(msg) { text ->
-                            writeText(msg, name, text)
-                        }
-                        if (handled) {
-                            engine.clearDirectText()
-                        }
-                    }
+                val cfg = ModelManager.config()
+                val name = model.nameOf(msg).orEmpty()
+                val ns = model.namespaceOf(msg).orEmpty()
+
+                // 流式回答按配置决定是否拦截
+                val isStream = name == AivsModel.NAME_TOAST_STREAM ||
+                    name == AivsModel.NAME_STYLE_TOAST_STREAM_START
+                if (isStream && !cfg.hookToastStream) continue
+
+                val handled = engine.onAnswerMessage(msg) { text ->
+                    writeText(msg, ns, name, text)
+                }
+                if (handled) {
+                    engine.clearDirectText()
                 }
             }
         }
@@ -314,14 +314,19 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
          *
          * 优先调用 setter（`setText(String)` / `setMarkdownText(String)`），
          * 因为 setter 里可能有额外的副作用（比如同步更新内部 JSON 缓存）。
+         *
+         * 字段选择与 [InterceptEngine.payloadTextField] 完全对应。
          */
-        private fun writeText(msg: Any, name: String, text: String): Boolean {
+        private fun writeText(msg: Any, ns: String, name: String, text: String): Boolean {
             val model = AivsModel.get()
             val payload = model.payloadOf(msg) ?: return false
-            val isStream = name == "ToastStream" ||
-                Reflector.fieldOf(payload.javaClass, "markdown_text") != null
 
-            val ok = if (isStream) {
+            val isStream = name == AivsModel.NAME_TOAST_STREAM ||
+                name == AivsModel.NAME_STYLE_TOAST_STREAM_START ||
+                Reflector.fieldOf(payload.javaClass, "markdown_text") != null
+            val hasMarkdown = Reflector.fieldOf(payload.javaClass, "markdown_text") != null
+
+            val ok = if (isStream && hasMarkdown) {
                 Reflector.invokeSetter(payload, "setMarkdownText", "markdown_text", text) ||
                     Reflector.invokeSetter(payload, "setMarkdownText", "text", text) ||
                     Reflector.set(payload, "markdown_text", text) ||
@@ -330,7 +335,7 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Reflector.invokeSetter(payload, "setText", "text", text) ||
                     Reflector.set(payload, "text", text)
             }
-            XLog.d("写回 payload.${if (isStream) "markdown_text" else "text"} => ${ok}")
+            XLog.d("写回 payload.${if (isStream && hasMarkdown) "markdown_text" else "text"} => ${ok}")
             return ok
         }
     }
@@ -426,7 +431,7 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 val ns = model.namespaceOf(self) ?: return
                                 val name = model.nameOf(self) ?: return
                                 if (ns == "Template" && name == "Toast") {
-                                    engine.onToast(self) { text ->
+                                    engine.onAnswerMessage(self) { text ->
                                         Reflector.set(param.args[0], "text", text)
                                     }
                                 }

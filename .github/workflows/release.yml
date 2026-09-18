@@ -90,6 +90,14 @@ jobs:
 
             小米运动健康 AI 助手接管模块（LSPosed）。把「小爱同学」的回答替换为任意 OpenAI 兼容大模型。
 
+            ### v1.1.0 重要变更
+
+            - ✅ **3.57.0 兼容**：3.57.0 上 `Template.Toast` 是 App→Cloud，已自动改为按 `EventHeader` 类型筛选，只劫持真正的 Cloud→App 消息。
+            - ✅ **3.59.1 兼容**：沿用 Template.* 四个回答类型。
+            - ✅ 默认系统提示词含 `<modelname>` 占位，模型从一开始就知道自己是谁。
+            - ✅ 设置页改为顶栏 IconButton 关闭，避免被滚动条推出视口。
+            - 如果旧版没生效，**先到 LSPosed 强制停止一次小米运动健康** 再说一句话。
+
             ### 下载
             - `xiaoai-*-release.apk` — 日常使用
             - `xiaoai-*-debug.apk` — 排查问题用

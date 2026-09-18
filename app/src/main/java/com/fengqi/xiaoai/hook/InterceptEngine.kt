@@ -55,10 +55,7 @@ internal class InterceptEngine {
     companion object {
         private const val NS_SPEECH = "SpeechRecognizer"
         private const val NS_TEMPLATE = "Template"
-        private const val NAME_RECOGNIZE_RESULT = "RecognizeResult"
-        private const val NAME_TOAST = "Toast"
-        private const val NAME_TOAST_V2 = "ToastV2"
-        private const val NAME_TOAST_STREAM = "ToastStream"
+        private const val NS_APPLICATION = "Application"
 
         /** 主线程判定阈值：单次等待最多 10s */
         private const val MAX_BLOCK_MS = 10_000L
@@ -159,21 +156,29 @@ internal class InterceptEngine {
     }
 
     // ==================================================================
-    // 入口 2：Toast（回答）
+    // 入口 2：回答消息（统一处理 Template.* / Application.GenerateSpeak）
     // ==================================================================
 
     /**
-     * 处理 Template.Toast / ToastV2 / ToastStream。
+     * 处理 Cloud→App 的回答消息。
+     *
+     * 兼容 3.57.0 与 3.59.1：
+     *  - 3.59.1：`Template.Toast` / `Template.ToastV2` / `Template.ToastStream` /
+     *           `Template.StyleToastStreamStart`，文本字段 `text` / `markdown_text`
+     *  - 3.57.0：`Application.GenerateSpeak`，文本字段 `text`
+     *
+     * 调用方（Hook 层）必须先用 [AivsModel.isAnswerMessage] 过滤一次，确保不会误拦
+     * App→Cloud 方向的同名消息（3.57.0 上 `Template.Toast` 就是 InstructionPayload）。
      *
      * @param rewrite 由 Hook 层提供：把文本写回消息对象的回调
      * @return true 表示已经（或即将）改写文本并把结果写回了对象；false 表示放行原始流程
      */
-    fun onToast(message: Any?, rewrite: (String) -> Boolean): Boolean {
+    fun onAnswerMessage(message: Any?, rewrite: (String) -> Boolean): Boolean {
         val model = AivsModel.get()
         val payload = model.payloadOf(message) ?: return false
 
         val dialogId = model.dialogIdOf(message).orEmpty()
-        val fieldName = toastTextField(message, payload)
+        val fieldName = payloadTextField(message, payload)
 
         // 情况 A：手环正在选择模式，或刚才的语音指令产生了「待覆盖文本」，
         //        这些场景在 onRecognizeResult 里已经算好文本但无法直接写回 RecognizeResult，
@@ -282,16 +287,24 @@ internal class InterceptEngine {
         return ok
     }
 
-    /** Toast 的文本字段名：Toast 用 text，ToastStream 用 markdown_text */
-    private fun toastTextField(message: Any?, payload: Any?): String {
+    /**
+     * 回答消息的文本字段名。
+     *
+     * 规则：
+     *  - `Template.Toast` / `Template.ToastV2` / `Application.GenerateSpeak`  → `text`
+     *  - `Template.ToastStream` / `Template.StyleToastStreamStart`           → 优先
+     *    `markdown_text`，没有再退回 `text`（部分版本字段名只有 text）。
+     *
+     * `name` 参数可能为 null（header 解析失败），这时默认用 `text` —— 把原 payload
+     * 上「看起来像文本」的字段拿出来。后续 setter 仍会按字段名优先匹配。
+     */
+    private fun payloadTextField(message: Any?, payload: Any?): String {
         val name = AivsModel.get().nameOf(message)
-        val isStream = name == NAME_TOAST_STREAM ||
-            Reflector.fieldOf(payload?.javaClass, "markdown_text") != null
-        return if (isStream && Reflector.fieldOf(payload?.javaClass, "markdown_text") != null) {
-            "markdown_text"
-        } else {
-            "text"
-        }
+        val hasMarkdown = Reflector.fieldOf(payload?.javaClass, "markdown_text") != null
+        val isStream = name == AivsModel.NAME_TOAST_STREAM ||
+            name == AivsModel.NAME_STYLE_TOAST_STREAM_START ||
+            hasMarkdown
+        return if (isStream && hasMarkdown) "markdown_text" else "text"
     }
 
     // ==================================================================

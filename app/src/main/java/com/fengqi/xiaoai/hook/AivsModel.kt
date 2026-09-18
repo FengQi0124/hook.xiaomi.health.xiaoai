@@ -32,7 +32,10 @@ internal class AivsModel private constructor() {
     var recognizeResultItemClass: Class<*>? = null
     var toastClass: Class<*>? = null
     var toastStreamClass: Class<*>? = null
+    var toastV2Class: Class<*>? = null
     var styleToastStreamStartClass: Class<*>? = null
+    /** 3.57.0 上唯一的 Cloud→App 回答类型：`Application$GenerateSpeak`，仅 `text: Optional<String>` 一字段 */
+    var generateSpeakClass: Class<*>? = null
 
     /** Apis 分发接口（ApiNameMapping / MessageHandler 等） */
     var apiNameMappingClass: Class<*>? = null
@@ -42,8 +45,17 @@ internal class AivsModel private constructor() {
 
     data class MethodRef(val owner: Class<*>, val name: String, val paramCount: Int)
 
+    /**
+     * 「模型已解析」：能识别消息 + 至少识别一个 Cloud→App 回答类型。
+     *
+     * 注意：3.57.0 上 Toast 是 `InstructionPayload`（App→Cloud，不是回答），所以 `toastClass`
+     * 可能为 null；这时只要 `generateSpeakClass` 命中，就视为已解析。
+     */
     val resolved: Boolean
-        get() = messageClass != null && toastClass != null
+        get() = messageClass != null && eventHeaderClass != null &&
+            (toastClass != null || toastV2Class != null ||
+                toastStreamClass != null || styleToastStreamStartClass != null ||
+                generateSpeakClass != null)
 
     companion object {
         private val once = AtomicBoolean(false)
@@ -103,6 +115,11 @@ internal class AivsModel private constructor() {
             ?.firstOrNull { it.simpleName.contains("Item") }
 
         toastClass = findToastClass()
+        toastV2Class = Reflector.findClass(
+            "com.xiaomi.ai.api.Template\$ToastV2",
+            "com.xiaomi.ai.aivs.api.Template\$ToastV2",
+            "ai.xiaomi.api.Template\$ToastV2",
+        )
         toastStreamClass = Reflector.findClass(
             "com.xiaomi.ai.api.Template\$ToastStream",
             "com.xiaomi.ai.aivs.api.Template\$ToastStream",
@@ -114,9 +131,24 @@ internal class AivsModel private constructor() {
             "com.xiaomi.ai.aivs.api.Template\$StyleToastStreamStart",
         )
 
+        // 3.57.0 上 Cloud→App 唯一的回答类型：
+        //   Application$GenerateSpeak（EventPayload，仅 text: Optional<String> 一字段）
+        // 在 3.59.1 上不存在，所以这里允许 null。
+        generateSpeakClass = Reflector.findClass(
+            "com.xiaomi.ai.api.Application\$GenerateSpeak",
+            "com.xiaomi.ai.aivs.api.Application\$GenerateSpeak",
+            "ai.xiaomi.api.Application\$GenerateSpeak",
+        ) ?: Reflector.findClassByFields(
+            setOf("text"),
+            classFilter = { name ->
+                name.endsWith("GenerateSpeak") && name.contains("Application")
+            }
+        )
+
         apiNameMappingClass = Reflector.findClass(
             "com.xiaomi.ai.api.ApiNameMapping",
             "com.xiaomi.ai.aivs.ApiNameMapping",
+            "com.xiaomi.ai.api.AIApiNameMapping",
         ) ?: Reflector.findClassByFields(
             setOf(), classFilter = { it.endsWith("ApiNameMapping") }
         )
@@ -125,15 +157,18 @@ internal class AivsModel private constructor() {
 
         XLog.i(
             "AIVS 模型解析结果:\n" +
-                "  Message            = ${messageClass?.name}\n" +
-                "  EventHeader        = ${eventHeaderClass?.name}\n" +
-                "  InstructionHeader  = ${instructionHeaderClass?.name}\n" +
-                "  RecognizeResult    = ${recognizeResultClass?.name}\n" +
-                "  RecognizeResultItem= ${recognizeResultItemClass?.name}\n" +
-                "  Toast              = ${toastClass?.name}\n" +
-                "  ToastStream        = ${toastStreamClass?.name}\n" +
-                "  ApiNameMapping     = ${apiNameMappingClass?.name}\n" +
-                "  分发候选方法       = $dispatchMethodCandidates"
+                "  Message              = ${messageClass?.name}\n" +
+                "  EventHeader          = ${eventHeaderClass?.name}\n" +
+                "  InstructionHeader    = ${instructionHeaderClass?.name}\n" +
+                "  RecognizeResult      = ${recognizeResultClass?.name}\n" +
+                "  RecognizeResultItem  = ${recognizeResultItemClass?.name}\n" +
+                "  Toast                = ${toastClass?.name}\n" +
+                "  ToastV2              = ${toastV2Class?.name}\n" +
+                "  ToastStream          = ${toastStreamClass?.name}\n" +
+                "  StyleToastStreamStart= ${styleToastStreamStartClass?.name}\n" +
+                "  GenerateSpeak(3.57.0)= ${generateSpeakClass?.name}\n" +
+                "  ApiNameMapping       = ${apiNameMappingClass?.name}\n" +
+                "  分发候选方法         = ${dispatchMethodCandidates.size} 个"
         )
     }
 
@@ -176,6 +211,76 @@ internal class AivsModel private constructor() {
                     }.getOrNull()
                 }
         }
+    }
+
+    /**
+     * 判断 header 是否为 `EventHeader`（Cloud→App）。
+     *
+     * AIVS 中所有从云端下发的消息 header 都是 `EventHeader`（`InstructionHeader` 只用于
+     * App→Cloud）。这个判断在 3.57.0 与 3.59.1 上都成立——两份代码里 `EventHeader`
+     * 都是 `MessageHeader` 的子类，类名不变。
+     *
+     * 如果 `eventHeaderClass` 解析失败（极少见，类被完全混淆），保守地返回 false —— 这样
+     * 会漏拦，但不会误拦；Hook 层会用 namespace 白名单再兜一道。
+     */
+    fun isEventHeader(header: Any?): Boolean {
+        val cls = eventHeaderClass ?: return false
+        return cls.isInstance(header)
+    }
+
+    /**
+     * 消息的方向判断。
+     *
+     * 优先用 header 类型（最准）；失败时退回 namespace 白名单：
+     *  - `RecognizeResult` 一律 App→Cloud；
+     *  - `Application.*` 一律 Cloud→App（3.57.0 上唯一回答类型 GenerateSpeak 在这里）；
+     *  - `Template.*` 在 3.57.0 上 App→Cloud、3.59.1 上 Cloud→App，所以 namespace
+     *    白名单做不到，要靠 header 类型。
+     */
+    fun isCloudToApp(message: Any?): Boolean {
+        val header = headerOf(message) ?: return false
+        return isEventHeader(header)
+    }
+
+    /**
+     * 这个消息是不是我们要拦截的「回答」消息。
+     *
+     * 必须是 Cloud→App 且属于以下 (namespace, name) 之一：
+     *  - 3.59.1：`Template.Toast` / `Template.ToastV2` / `Template.ToastStream` /
+     *           `Template.StyleToastStreamStart`
+     *  - 3.57.0：`Application.GenerateSpeak`
+     */
+    fun isAnswerMessage(message: Any?): Boolean {
+        if (!isCloudToApp(message)) return false
+        val ns = namespaceOf(message) ?: return false
+        val name = nameOf(message) ?: return false
+        return when (ns) {
+            "Template" -> name in ANSWER_TEMPLATE_NAMES
+            "Application" -> name == NAME_GENERATE_SPEAK
+            else -> false
+        }
+    }
+
+    /** App→Cloud 的语音识别结果（所有版本方向一致） */
+    fun isRecognizeMessage(message: Any?): Boolean {
+        val ns = namespaceOf(message) ?: return false
+        val name = nameOf(message) ?: return false
+        return ns == "SpeechRecognizer" && name == "RecognizeResult"
+    }
+
+    companion object {
+        // 用 companion 而非 object：保持所有命名空间常量都集中在 AivsModel 里
+        const val NAME_RECOGNIZE_RESULT = "RecognizeResult"
+        const val NAME_TOAST = "Toast"
+        const val NAME_TOAST_V2 = "ToastV2"
+        const val NAME_TOAST_STREAM = "ToastStream"
+        const val NAME_STYLE_TOAST_STREAM_START = "StyleToastStreamStart"
+        const val NAME_GENERATE_SPEAK = "GenerateSpeak"
+
+        /** Template 命名空间下的所有回答类（按消息名） */
+        val ANSWER_TEMPLATE_NAMES = setOf(
+            NAME_TOAST, NAME_TOAST_V2, NAME_TOAST_STREAM, NAME_STYLE_TOAST_STREAM_START,
+        )
     }
 
     /**
