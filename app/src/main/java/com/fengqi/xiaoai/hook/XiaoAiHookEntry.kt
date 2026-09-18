@@ -122,8 +122,8 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
             runCatching { ModelManager.init(ctx) }
                 .onFailure { XLog.e("ModelManager 初始化失败", it) }
 
-            // 3) 启动配置轮询：手机端改设置后自动同步到本进程
-            ModelManager.startPolling(1500L)
+            // v1.2.0：UI 与 Hook 同进程，configFlow 是同一内存实例，零延迟同步，无需轮询。
+            // startPolling 已退化为 no-op。
 
             val e = InterceptEngine()
             engine = e

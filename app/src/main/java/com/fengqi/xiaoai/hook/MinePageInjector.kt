@@ -2,7 +2,6 @@ package com.fengqi.xiaoai.hook
 
 import android.app.Activity
 import android.content.Context
-import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -14,6 +13,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.fengqi.xiaoai.core.XLog
+import com.fengqi.xiaoai.ui.SettingsWindowController
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -51,16 +51,15 @@ internal object MinePageInjector {
 
     private const val INJECT_TAG = "xiaoai_injected_entry"
 
+    /** 模块自己的包名（必须写死，不能用 hostContext.packageName 推断） */
+    private const val MODULE_PACKAGE = "com.fengqi.xiaoai"
+
     /** 已注入的 Activity，弱引用避免泄漏 */
     private val injected = Collections.synchronizedSet(mutableSetOf<WeakReference<Activity>>())
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** 点击入口后要打开的设置页类名（在宿主进程里通过反射查找模块的 Activity） */
-    private var settingsClassName: String? = null
-
     fun install(lpparam: XC_LoadPackage.LoadPackageParam, ctx: Context) {
-        settingsClassName = "${ctx.packageName}.ui.SettingsActivity"
         hookActivityResume(lpparam)
         XLog.i("已安装「我的」页面注入器（锚点: ${ANCHOR_BEFORE.first()} / ${ANCHOR_AFTER.first()}）")
     }
@@ -233,44 +232,18 @@ internal object MinePageInjector {
     /**
      * 打开设置页。
      *
-     * 关键难题：设置页 Activity 属于**本模块 APK**，但 Context 来自**宿主 App**。
-     * 直接 `startActivity(ComponentName(modulePackage))` 在部分 ROM 上会因为
-     * 「导出/权限」问题失败。
-     *
-     * 解决：优先用模块自己的 `createPackageContext` 拿到模块 Context 再启动；
-     * 失败则退化为「用宿主 Context 指定显式 Component + 加 FLAG_ACTIVITY_NEW_TASK」。
+     * v1.2.0：完全抛弃独立 Activity 进程，直接在 com.mi.health 宿主进程里用
+     * [SettingsWindowController] 拉一个 [android.view.WindowManager] 子窗口渲染 UI。
+     * 好处：
+     *  - 用户杀后台 = 杀掉小米运动健康 = 本来就在用，没有"模块被独立杀"的风险；
+     *  - 不需要 SYSTEM_ALERT_WINDOW 权限；
+     *  - 与 Hook 进程同一 Context / 同一 XLog / 同一 ModelManager 内存实例，零延迟。
      */
     private fun openSettings(hostContext: Context) {
-        val modulePkg = hostContext.packageName
-        val cfg = com.fengqi.xiaoai.core.ModelManager.config()
-
-        val intent = Intent().apply {
-            setClassName(modulePkg, "com.fengqi.xiaoai.ui.SettingsActivity")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        }
-
-        // 方式 1：用模块自己的 Context 启动（最干净）
+        ModelManager.ensureInit(hostContext)
         runCatching {
-            val moduleCtx = hostContext.createPackageContext(modulePkg, Context.CONTEXT_IGNORE_SECURITY)
-            moduleCtx.startActivity(intent)
-            XLog.i("通过模块 Context 启动设置页")
-            return
-        }.onFailure { XLog.d("模块 Context 启动失败: ${it.message}") }
-
-        // 方式 2：宿主 Context 直接启动
-        runCatching {
-            hostContext.startActivity(intent)
-            XLog.i("通过宿主 Context 启动设置页")
-            return
-        }.onFailure { XLog.w("宿主 Context 启动失败: ${it.message}") }
-
-        // 方式 3：通过全局 ActivityThread 反射启动
-        runCatching {
-            val at = Class.forName("android.app.ActivityThread")
-            val current = at.getMethod("currentActivityThread").invoke(null)
-            val app = at.getMethod("getApplication").invoke(current) as Context
-            app.startActivity(intent)
-            XLog.i("通过 ActivityThread 启动设置页")
-        }.onFailure { XLog.e("所有方式都无法启动设置页", it) }
+            SettingsWindowController.show(hostContext)
+            XLog.i("已在 com.mi.health 进程内拉起设置窗口")
+        }.onFailure { XLog.e("SettingsWindowController.show() 失败", it) }
     }
 }

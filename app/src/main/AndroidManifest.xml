@@ -5,6 +5,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+        v1.2.0：模块 APK 不再声明任何 Activity。
+        所有设置 UI 通过 WindowManager + ComposeView 直接渲染在宿主 com.mi.health 进程里。
+        - 不需要桌面图标；
+        - 不需要独立的进程；
+        - 不需要 SYSTEM_ALERT_WINDOW 权限。
+        这样用户杀后台 = 杀掉小米运动健康 = 本来就在用，模块与宿主同生共死。
+    -->
     <application
         android:name=".XiaoAiApplication"
         android:allowBackup="false"
@@ -32,27 +40,6 @@
         <meta-data
             android:name="xposedsharedprefs"
             android:value="true" />
-
-        <!-- 设置页（在小米运动健康内部以模块身份启动） -->
-        <activity
-            android:name=".ui.SettingsActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:launchMode="singleTop"
-            android:theme="@style/Theme.XiaoAi">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
-        <!-- 供 Xposed 侧在本进程内直接打开的透明入口（避免跨进程启动问题） -->
-        <activity
-            android:name=".ui.LauncherProxyActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
     </application>
 

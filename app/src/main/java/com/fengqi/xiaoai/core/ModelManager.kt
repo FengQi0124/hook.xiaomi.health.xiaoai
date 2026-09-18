@@ -5,34 +5,26 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 模型管理器（全局单例）。
  *
- * ## 为什么用单例 + 双向初始化
- * 这个类会被**两个进程**分别加载：
- *  1. 本模块进程（设置页 UI）；
- *  2. 小米运动健康进程（LSPosed 注入后）。
- * 它们各自持有一份内存副本，通过 [FileConfigStore] 的 mtime 探测做同步。
- *
- * ## 同步机制（双保险）
- *  - **状态广播**：本模块进程改模型时发一条 App 内部广播，目标进程立刻响应（毫秒级）；
- *  - **轮询兜底**：后台协程每 1.5s 调一次 [ConfigStore.reloadIfChanged]，即使广播被系统拦截也能同步。
+ * ## v1.2.0 单进程架构
+ *  - UI（设置窗口、诊断窗口）与 Hook（小爱回答拦截）**都在 com.mi.health 进程里运行**；
+ *  - 因此 [configFlow] / [activeModel] 在同进程内是同一个实例，UI 切换 → Hook 即时生效；
+ *  - 跨进程文件 IO 仍然保留（落盘持久化 + 让 LSPosed 共享/调试场景能观察），但不再依赖轮询同步。
  *
  * ## 生命周期
- *  - UI 进程：`Application.onCreate` 调用 [init]
- *  - Hook 进程：Hook 入口调用 [init]，并调用 [startPolling]
+ *  - UI 窗口：[SettingsWindowController.show] 时调用 [ensureInit];
+ *  - Hook：[XiaoAiHookEntry] 在 handleLoadPackage 里调用 [init]。
  */
 object ModelManager {
 
@@ -86,16 +78,23 @@ object ModelManager {
     @Synchronized
     fun init(context: Context) {
         if (initialized) return
-        val dir = context.filesDir
+        // 兼容「在宿主进程里跑」的情况：Hook 后 com.mi.health 进程的 context.filesDir
+        // 是宿主的 dataDir (/data/data/com.mi.health/)，但配置要写到模块自己的 dataDir
+        // (/data/data/com.fengqi.xiaoai/) 才能跨进程共享。
+        // 用 createPackageContext 跨 uid 拿到模块自己的 Context，再取 filesDir。
+        val moduleCtx = runCatching {
+            context.createPackageContext("com.fengqi.xiaoai", Context.CONTEXT_IGNORE_SECURITY)
+        }.getOrNull() ?: context
+        val dir = moduleCtx.filesDir
         store = FileConfigStore(File(dir, "xiaoai_config.json"))
-        // 先初始化日志路径，确保后续 init 阶段的日志能落盘
+        // 先初始化日志路径（XLog.init 内部也会 createPackageContext）
         XLog.init(context)
         val cfg = store.get()
         _configFlow.value = cfg
         _activeModel.value = cfg.activeModel()
         XLog.verbose = cfg.verboseLog
         initialized = true
-        XLog.i("ModelManager 初始化完成，active=${_activeModel.value.displayName}")
+        XLog.i("ModelManager 初始化完成，dataDir=${dir.absolutePath} active=${_activeModel.value.displayName}")
     }
 
     /** 确保已初始化（Hook 侧拿到的 Context 可能是 App 的，也可能是模块的） */
@@ -149,18 +148,11 @@ object ModelManager {
     fun isSwitching(): Boolean = _switching.value
 
     /**
-     * 启动配置轮询同步。只在 Hook 注入的进程里调用；
-     * 每 [intervalMs] 毫秒检查一次文件 mtime，实现「手机端切换 → 手环端立即生效」。
+     * v1.2.0 起 UI 与 Hook 同一进程，不再需要文件轮询。
+     * 但保留 API 不抛错以便老调用方不炸；只打一条警告。
      */
     fun startPolling(intervalMs: Long = 1500L) {
-        if (!initialized) return
-        scope.launch {
-            XLog.i("配置同步轮询已启动，间隔 ${intervalMs}ms")
-            while (isActive) {
-                delay(intervalMs)
-                runCatching { refresh() }
-            }
-        }
+        XLog.i("startPolling 已废弃（v1.2.0 单进程架构），UI 与 Hook 共享内存实例，无需轮询")
     }
 
     /** 记录一次对话，用于 UI 展示 */
