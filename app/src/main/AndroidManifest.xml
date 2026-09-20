@@ -18,29 +18,24 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:description="@string/xposed_description"
         android:supportsRtl="true"
         android:theme="@style/Theme.XiaoAi"
         tools:targetApi="35">
 
-        <!-- ★ Xposed 模块声明（新版 LSPosed 使用 meta-data，旧版使用 assets/xposed_init） -->
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="@string/xposed_description" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="82" />
-        <meta-data
-            android:name="xposedscope"
-            android:resource="@array/xposed_scope" />
+        <!--
+            ★ 现代 libxposed API 模块**不需要**任何 Xposed meta-data。
+            框架直接从 APK 里读这三个文件：
+              META-INF/xposed/module.prop      —— minApiVersion / targetApiVersion / staticScope
+              META-INF/xposed/java_init.list   —— 入口类全限定名
+              META-INF/xposed/scope.list       —— 作用域包名
+            模块名取 android:label，模块说明取 android:description（见上面 application 标签）。
 
-        <!-- ★ LSPosed 专用：最低/目标框架版本 -->
-        <meta-data
-            android:name="xposedsharedprefs"
-            android:value="true" />
-
+            之前这里残留的 xposedmodule / xposeddescription / xposedminversion=82 是
+            legacy API 的声明方式：在 LSPosed 1.10+ 上不但没用，还会让管理器把模块
+            识别成已废弃的 legacy 模块（能勾选、但框架不会加载 → 无入口、无日志）。
+            已全部移除。
+        -->
     </application>
 
 </manifest>

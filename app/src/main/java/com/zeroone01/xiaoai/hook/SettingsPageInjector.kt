@@ -10,10 +10,6 @@ import android.widget.TextView
 import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.XLog
 import com.zeroone01.xiaoai.ui.SettingsWindowController
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.ref.WeakReference
 import java.util.Collections
 
@@ -78,54 +74,69 @@ internal object SettingsPageInjector {
 
     // ==================================================================
 
-    fun install(lpparam: XC_LoadPackage.LoadPackageParam, ctx: Context) {
-        hookSettingActivity(lpparam)
+    /**
+     * 安装注入器（现代 API 版本）。
+     *
+     * @param module 模块实例，提供 Hook 能力
+     * @param loader 宿主 ClassLoader（由 PackageLoadedParam 提供）
+     * @param app    宿主 Application（由 PackageReadyParam 提供），用作 View 的 Context
+     */
+    fun install(module: ModuleBridge, loader: ClassLoader, app: Context) {
+        hookSettingActivity(module, loader)
         XLog.i("已安装「设置」页面注入器（目标: $SETTING_ACTIVITY）")
     }
 
-    private fun hookSettingActivity(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val activityClass = runCatching {
-            XposedHelpers.findClass(SETTING_ACTIVITY, lpparam.classLoader)
-        }.getOrElse {
-            XLog.w("未找到 $SETTING_ACTIVITY，尝试模糊匹配…")
-            null
-        }
+    private fun hookSettingActivity(module: ModuleBridge, loader: ClassLoader) {
+        val activityClass = Reflect.findClass(SETTING_ACTIVITY, loader)
 
         if (activityClass != null) {
-            hookOnCreate(activityClass)
+            hookOnCreate(module, activityClass)
             return
         }
 
         // 模糊匹配：某些版本类名可能不同，按包名 + 类名后缀找
-        DexClassScanner.scan(lpparam.classLoader)
+        XLog.w("未找到 $SETTING_ACTIVITY，尝试模糊匹配…")
+        DexClassScanner.scan(loader)
             .filter { it.endsWith("about.setting.SettingActivity") || it.endsWith("SettingActivity") }
             .forEach { name ->
-                runCatching {
-                    hookOnCreate(Class.forName(name, false, lpparam.classLoader))
-                }.onFailure { XLog.d("模糊匹配 $name 失败: ${it.message}") }
+                Reflect.findClass(name, loader)?.let { hookOnCreate(module, it) }
             }
     }
 
-    private fun hookOnCreate(activityClass: Class<*>) {
-        runCatching {
-            XposedHelpers.findAndHookMethod(
-                activityClass,
-                "onCreate",
-                android.os.Bundle::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val activity = param.thisObject as? Activity ?: return
-                        if (isAlreadyInjected(activity)) return
-                        // 等布局完成（ViewBinding 已 inflate 完）
-                        activity.window?.decorView?.post {
-                            runCatching { tryInject(activity) }
-                                .onFailure { XLog.d("注入设置页入口失败: ${it.message}") }
-                        }
-                    }
+    private fun hookOnCreate(module: ModuleBridge, activityClass: Class<*>) {
+        // 只挂真正的 onCreate(Bundle)，避免把 onCreate(...) 的重载和
+        // 各种 Hilt/Binding 版本全挂一遍导致重复注入。
+        val onCreate = activityClass.declaredMethods.firstOrNull {
+            it.name == "onCreate" &&
+                it.parameterCount == 1 &&
+                it.parameterTypes[0] == android.os.Bundle::class.java
+        } ?: runCatching {
+            activityClass.getDeclaredMethod("onCreate", android.os.Bundle::class.java)
+        }.getOrNull()
+
+        if (onCreate == null) {
+            XLog.w("${activityClass.simpleName} 没有 onCreate(Bundle)，跳过")
+            return
+        }
+
+        val ok = HookCompat.hook(
+            module, onCreate,
+            after = { ctx ->
+                val activity = ctx.thisObject as? Activity ?: return@hook
+                if (isAlreadyInjected(activity)) return@hook
+                // 等布局完成（ViewBinding 已 inflate 完）
+                activity.window?.decorView?.post {
+                    runCatching { tryInject(activity) }
+                        .onFailure { XLog.d("注入设置页入口失败: ${it.message}") }
                 }
-            )
+            },
+            tag = "${activityClass.simpleName}#onCreate",
+        )
+        if (ok) {
             XLog.i("已 Hook ${activityClass.simpleName}#onCreate")
-        }.onFailure { XLog.w("Hook ${activityClass.simpleName}#onCreate 失败: ${it.message}") }
+        } else {
+            XLog.w("Hook ${activityClass.simpleName}#onCreate 失败")
+        }
     }
 
     private fun isAlreadyInjected(activity: Activity): Boolean {
@@ -165,48 +176,46 @@ internal object SettingsPageInjector {
         val loader = activity.classLoader
 
         // 1) 拿 binding：BaseBindingActivity.getMBinding()
-        val bindingActivityClass = runCatching {
-            XposedHelpers.findClass(BASE_BINDING_ACTIVITY, loader)
-        }.getOrNull() ?: return false
-
-        val binding = runCatching {
-            XposedHelpers.callMethod(activity, "getMBinding")
-        }.getOrNull() ?: runCatching {
-            // 名字可能变了，直接按返回类型找无参方法
-            bindingActivityClass.methods.firstOrNull {
+        //    用 BaseBindingActivity 做锚点比直接用混淆后的具体 binding 类名抗版本差异。
+        val bindingActivityClass = Reflect.findClass(BASE_BINDING_ACTIVITY, loader)
+        val binding = Reflect.callMethod(activity, "getMBinding")
+            ?: bindingActivityClass?.methods?.firstOrNull {
                 it.parameterCount == 0 && it.returnType.name.contains("databinding")
-            }?.let { m -> m.isAccessible = true; m.invoke(activity) }
-        }.getOrNull() ?: return false
+            }?.let { m ->
+                runCatching { m.isAccessible = true; m.invoke(activity) }.getOrNull()
+            }
+            ?: return false
 
         // 2) 从 binding 里找 NestedScrollView（根滚动容器）
         val scroll = findFieldByTypeOrName(binding, "miuix.core.widget.NestedScrollView", "N")
             as? ViewGroup ?: return false
 
         // 3) 找原生单行设置项，用它所属的父容器作为插入目标
-        val itemClass = runCatching {
-            XposedHelpers.findClass(ITEM_CLASS, loader)
-        }.getOrNull() ?: return false
+        val itemClass = Reflect.findClass(ITEM_CLASS, loader) ?: run {
+            XLog.d("找不到原生设置项控件 $ITEM_CLASS")
+            return false
+        }
 
-        val nativeItem = findFirstChildOfType(scroll, itemClass) as? View ?: return false
+        val nativeItem = findFirstChildOfType(scroll, itemClass) ?: return false
         val parent = nativeItem.parent as? ViewGroup ?: return false
 
         // 4) 实例化一个新的设置项（用宿主 Class，所以主题/样式全自动）
-        val newItem = runCatching {
-            XposedHelpers.newInstance(itemClass, activity as Context) as? View
-        }.getOrNull() ?: runCatching {
-            XposedHelpers.newInstance(itemClass, activity as Context, null) as? View
-        }.getOrNull() ?: return false
+        val newItem = Reflect.newInstance(itemClass, activity) as? View
+            ?: Reflect.newInstance(itemClass, activity, null) as? View
+            ?: return false
 
         newItem.tag = INJECT_TAG
 
         // 5) 设置文案（setTitle / setRemindText 均来自 RightArrowSingleLineTextView）
-        runCatching {
-            XposedHelpers.callMethod(newItem, "setTitle", ENTRY_TITLE)
-        }.onFailure { XLog.d("setTitle 失败: ${it.message}") }
+        if (Reflect.callMethod(newItem, "setTitle", ENTRY_TITLE) == null) {
+            XLog.d("setTitle 未生效，尝试 setTitleRes / setText")
+            Reflect.callMethod(newItem, "setTitleRes", ENTRY_TITLE)
+            Reflect.callMethod(newItem, "setText", ENTRY_TITLE)
+        }
 
-        runCatching {
-            XposedHelpers.callMethod(newItem, "setRemindText", ENTRY_SUMMARY)
-        }.onFailure { XLog.d("setRemindText 失败: ${it.message}") }
+        if (Reflect.callMethod(newItem, "setRemindText", ENTRY_SUMMARY) == null) {
+            Reflect.callMethod(newItem, "setReminText", ENTRY_SUMMARY)
+        }
 
         // 6) 点击打开模块设置窗口
         newItem.setOnClickListener { v -> openSettings(v.context) }
@@ -231,12 +240,10 @@ internal object SettingsPageInjector {
      */
     private fun fallbackInjectByText(activity: Activity, decor: View): Boolean {
         val loader = activity.classLoader
-        val itemClass = runCatching {
-            XposedHelpers.findClass(ITEM_CLASS, loader)
-        }.getOrNull() ?: return false
+        val itemClass = Reflect.findClass(ITEM_CLASS, loader) ?: return false
 
         val root = decor as? ViewGroup ?: return false
-        val anchor = findFirstChildOfType(root, itemClass) as? View ?: return false
+        val anchor = findFirstChildOfType(root, itemClass) ?: return false
         val parent = anchor.parent as? ViewGroup ?: return false
 
         val entry = buildFallbackView(activity).apply { tag = INJECT_TAG }
@@ -295,16 +302,11 @@ internal object SettingsPageInjector {
 
     /** 反射从对象里取字段：先按名字找，找不到再按类型名匹配第一个 */
     private fun findFieldByTypeOrName(obj: Any, typeName: String, preferredName: String): Any? {
-        val clazz = obj.javaClass
-        // 按名字
-        runCatching {
-            val f = clazz.getDeclaredField(preferredName)
-            f.isAccessible = true
-            val v = f.get(obj)
-            if (v != null) return v
-        }
+        // 按名字（含继承链）
+        Reflect.get<Any>(obj, preferredName)?.let { return it }
+
         // 按类型（含父类）
-        var c: Class<*>? = clazz
+        var c: Class<*>? = obj.javaClass
         while (c != null) {
             c.declaredFields.firstOrNull { it.type.name == typeName }?.let { f ->
                 runCatching {

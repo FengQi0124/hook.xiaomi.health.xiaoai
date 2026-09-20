@@ -101,6 +101,46 @@ jobs:
           set -o pipefail
           /opt/gradle-9.3.1/bin/gradle :app:assembleDebug --no-daemon --stacktrace 2>&1 | tail -60
 
+      # ── 关键的「打包自检」──────────────────────────────────────────────
+      # 历史上踩过的坑：模块用 legacy API(82) + 元数据放在 assets/ 下，
+      # 结果 LSPosed 1.10+ 完全忽略这个模块 —— App 里没入口、日志里没输出，
+      # 但构建是「成功」的，直到用户装上才发现。
+      # 所以这里在发布前强制校验 APK 的现代 API 契约，不合格直接让 CI 失败。
+      - name: 校验 libxposed 现代 API 打包契约
+        run: |
+          set -e
+          APK=app/build/outputs/apk/release/app-release.apk
+          echo "── 1. META-INF/xposed/ 三项必须在 APK 根目录（不是 assets/ 下）──"
+          unzip -l "$APK" | grep -q "META-INF/xposed/module.prop"    || { echo "✗ 缺 META-INF/xposed/module.prop"; exit 1; }
+          unzip -l "$APK" | grep -q "META-INF/xposed/java_init.list" || { echo "✗ 缺 META-INF/xposed/java_init.list"; exit 1; }
+          unzip -l "$APK" | grep -q "META-INF/xposed/scope.list"     || { echo "✗ 缺 META-INF/xposed/scope.list"; exit 1; }
+
+          echo "── 2. 绝不能残留 legacy 的 assets/xposed_init ──"
+          if unzip -l "$APK" | grep -q "assets/xposed_init"; then
+            echo "✗ 仍存在 legacy assets/xposed_init"; exit 1
+          fi
+
+          echo "── 3. module.prop 必须有 minApiVersion / targetApiVersion ──"
+          unzip -p "$APK" META-INF/xposed/module.prop > /tmp/mp.txt
+          grep -qE '^minApiVersion=[0-9]+'    /tmp/mp.txt || { echo "✗ module.prop 缺 minApiVersion"; exit 1; }
+          grep -qE '^targetApiVersion=[0-9]+' /tmp/mp.txt || { echo "✗ module.prop 缺 targetApiVersion"; exit 1; }
+          cat /tmp/mp.txt
+
+          echo "── 4. 入口类必须在 DEX 里且继承 io.github.libxposed.api.XposedModule ──"
+          ENTRY=$(unzip -p "$APK" META-INF/xposed/java_init.list | head -1)
+          ENTRY_PATH=$(echo "$ENTRY" | tr '.' '/')
+          echo "入口类: $ENTRY"
+          rm -rf /tmp/dexchk && mkdir -p /tmp/dexchk
+          (cd /tmp/dexchk && unzip -q -o "$GITHUB_WORKSPACE/$APK" 'classes*.dex')
+          if ! grep -rq "$ENTRY_PATH" /tmp/dexchk/; then
+            echo "✗ DEX 里找不到入口类 $ENTRY"; exit 1
+          fi
+          if ! grep -rq "io/github/libxposed/api/XposedModule" /tmp/dexchk/; then
+            echo "✗ DEX 里没有 libxposed XposedModule —— 入口类可能没继承现代 API"; exit 1
+          fi
+
+          echo "✅ 现代 API 打包契约校验通过"
+
       - name: 整理产物
         run: |
           mkdir -p out
@@ -132,7 +172,7 @@ jobs:
             echo "创建 Release $TAG"
             gh release create "$TAG" \
               -R "$GITHUB_REPOSITORY" \
-              --title "小米运动健康·手环小爱增强 $TAG" \
+              --title "手环小爱 AI 增强 $TAG" \
               --generate-notes \
               out/*
           fi

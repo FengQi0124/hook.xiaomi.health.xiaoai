@@ -88,6 +88,8 @@ android {
 
 dependencies {
     // ---- Xposed API（compileOnly：运行期由 LSPosed 框架提供）----
+    // io.github.libxposed:api —— 现代 Xposed API，替代已废弃的 de.robv.android.xposed:api。
+    // LSPosed 1.10+ 只加载这类模块，legacy 模块会被静默忽略（表现为「无日志、无入口」）。
     compileOnly(libs.xposed.api)
 
     // ---- Miuix UI（Compose Multiplatform）----

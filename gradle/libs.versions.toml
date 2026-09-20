@@ -20,7 +20,9 @@ coroutines = "1.10.2"
 datastore = "1.1.7"
 
 # --- Xposed ---
-xposedApi = "82"
+# libxposed 现代 API。LSPosed 从 1.9.0 起不再加载 legacy（de.robv.android.xposed）模块，
+# 必须使用 io.github.libxposed:api。102 对应 LSPosed >= 1.10（模块列表显示 "API 102"）。
+xposedApi = "102.0.0"
 
 [libraries]
 # Miuix
@@ -44,8 +46,8 @@ okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 
-# Xposed
-xposed-api = { module = "de.robv.android.xposed:api", version.ref = "xposedApi" }
+# Xposed（现代 API，来自 Maven Central）
+xposed-api = { module = "io.github.libxposed:api", version.ref = "xposedApi" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

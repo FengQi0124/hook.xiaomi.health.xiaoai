@@ -1,0 +1,17 @@
+name=手环小爱 AI 增强
+version=0.1.0-beta1
+versionCode=1
+author=ZeroOne01
+description=把小米运动健康里手环/手表的小爱同学接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），可在手环上语音切换模型。作用域仅限小米运动健康，与手机版小爱同学无关。
+
+# ── libxposed 现代 API 声明 ─────────────────────────────────────────────
+# 缺了这两行，LSPosed 会直接忽略本模块（表现为：模块能勾选，但 App 里没入口、
+# 日志里也没有任何模块输出）。
+minApiVersion=102
+targetApiVersion=102
+
+# 静态作用域：模块管理器在「未激活」状态下也能读到作用域，减少手动勾选遗漏。
+staticScope=true
+
+# 允许 LSPosed 热重载本模块，改配置后无需重启宿主。
+autoHotReload=false
