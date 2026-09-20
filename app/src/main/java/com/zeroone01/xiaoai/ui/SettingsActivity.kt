@@ -32,6 +32,9 @@ class SettingsActivity : ComponentActivity() {
         XLog.i("SettingsActivity 启动")
 
         setContent {
+            val isDark = resources.configuration.uiMode and
+                android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
             MiuixTheme {
                 val config by ModelManager.configFlow.collectAsState()
                 var showDiagnostics by remember { mutableStateOf(false) }
@@ -44,6 +47,7 @@ class SettingsActivity : ComponentActivity() {
                         onSave = { cfg -> ModelManager.saveConfig(cfg) },
                         onClose = { finish() },
                         onOpenDiagnostics = { showDiagnostics = true },
+                        isDarkTheme = isDark,
                     )
                 }
             }

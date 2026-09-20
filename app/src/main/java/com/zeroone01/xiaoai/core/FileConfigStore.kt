@@ -1,6 +1,10 @@
 package com.zeroone01.xiaoai.core
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
@@ -77,12 +81,41 @@ class FileConfigStore(private val file: File) : ConfigStore {
             lastLoadedMtime.set(file.lastModified())
             return
         }
-        val parsed = json.decodeFromString(AiConfig.serializer(), text)
-        // 补齐新增的提供方（老版本配置升级）
-        val merged = parsed.copy(providers = AiConfig.defaultProviders() + parsed.providers)
-        config = merged
+        // 解析：先新版，失败再尝试旧版迁移
+        val parsed = runCatching {
+            json.decodeFromString(AiConfig.serializer(), text)
+        }.getOrElse { firstErr ->
+            XLog.w("按新版解析配置失败，尝试旧版迁移：${firstErr.message}")
+            tryMigrateLegacy(text) ?: throw firstErr
+        }
+        // 补齐默认列表里缺失的行（仅追加，不删用户的）
+        val defaults = AiConfig.defaultProviders()
+        val existingKeys = parsed.providers.map { it.key }.toSet()
+        val augmented = parsed.providers + defaults.filter { it.key !in existingKeys }
+        // 保证 XIAOAI 在第一位
+        val reordered = augmented.sortedBy { if (it.isXiaoAi) 0 else 1 }
+        val merged = parsed.copy(providers = reordered)
+        // activeModelKey 必须命中 providers 里某一行的 key，否则回落 XIAOAI
+        val safeMerged = if (merged.activeModelKey !in merged.providers.map { it.key }) {
+            merged.copy(activeModelKey = AiConfig.XIAOAI_KEY)
+        } else merged
+        config = safeMerged
         lastLoadedMtime.set(file.lastModified())
-        XLog.i("配置已加载: active=${merged.activeModelKey} verbose=${merged.verboseLog}")
+        XLog.i(
+            "配置已加载: active=${safeMerged.activeModelKey} verbose=${safeMerged.verboseLog} " +
+                "行数=${safeMerged.providers.size}"
+        )
+    }
+
+    /** 旧版 JSON（providers 是 Map）解析失败时的兜底迁移 */
+    private fun tryMigrateLegacy(text: String): AiConfig? = runCatching {
+        val element = json.parseToJsonElement(text)
+        if (element !is JsonObject) return@runCatching null
+        val rawMap = element.toMapOfAny()
+        AiConfig.migrateLegacy(rawMap)
+    }.getOrElse {
+        XLog.e("旧版配置迁移失败", it)
+        null
     }
 
     private fun saveToDisk(cfg: AiConfig) {
@@ -96,4 +129,21 @@ class FileConfigStore(private val file: File) : ConfigStore {
         }
         lastLoadedMtime.set(file.lastModified())
     }
+}
+
+/* ---- JSON -> Map<String, Any?> 辅助 ---- */
+
+private fun JsonElement.toMapOfAny(): Map<String, Any?> = when (this) {
+    is JsonObject -> entries.associate { (k, v) -> k to v.toAnyValue() }
+    else -> emptyMap()
+}
+
+private fun JsonElement.toAnyValue(): Any? = when (this) {
+    is JsonPrimitive -> {
+        val s = content
+        s.toBooleanStrictOrNull() ?: s.toLongOrNull() ?: s.toDoubleOrNull() ?: s
+    }
+    is JsonObject -> toMapOfAny()
+    is JsonArray -> map { it.toAnyValue() }
+    else -> null
 }

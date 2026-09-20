@@ -123,7 +123,7 @@ internal class InterceptEngine {
             }
 
             is VoiceCommandHandler.OnRecognize.Switched -> {
-                XLog.i("拦截：模型切换 -> ${action.model.displayName}")
+                XLog.i("拦截：模型切换 -> ${action.providerName}")
                 action.replyText
             }
 
@@ -187,7 +187,7 @@ internal class InterceptEngine {
         if (direct != null) {
             XLog.i("使用指令应答文本覆盖 Toast: ${direct.take(50)}")
             if (rewrite(direct)) {
-                recordDialog(dialogId, "", direct, ModelId.XIAOAI.displayName, true, "语音指令")
+                recordDialog(dialogId, "", direct, "语音指令", true, "语音指令")
                 return true
             }
             return false
@@ -195,12 +195,10 @@ internal class InterceptEngine {
 
         // 情况 B：常规 AI 替换
         val cfg = ModelManager.config()
-        val activeModel = ModelId.fromKey(
-            // 优先用提问时记录的模型，避免对话途中切模型导致错配
-            ModelManager.pendingQueries[dialogId]?.modelKey ?: cfg.activeModelKey
-        )
+        val active = cfg.activeProvider()
+        val activeDisplay = active.displayName.ifBlank { active.providerType.displayName }
 
-        if (!activeModel.isThirdParty) {
+        if (active.isXiaoAi) {
             XLog.d("当前为小爱同学模式，不劫持 Toast")
             return false
         }
@@ -211,8 +209,8 @@ internal class InterceptEngine {
             return false
         }
 
-        val request = cfg.toChatRequest(activeModel, buildHistory()) ?: run {
-            XLog.w("${activeModel.displayName} 配置不完整（缺少 BaseUrl/APIKey/模型名），放行原始回答")
+        val request = cfg.toChatRequest(buildHistory()) ?: run {
+            XLog.w("$activeDisplay 配置不完整（缺少 BaseUrl/APIKey/模型名），放行原始回答")
             return false
         }
 
@@ -228,12 +226,12 @@ internal class InterceptEngine {
         waiting[waitKey] = pendingReply
 
         val originalText = Reflector.getString(payload, fieldName).orEmpty()
-        XLog.i("开始替换 [dialog=$dialogId] 模型=${activeModel.displayName} 提问=${pending.text}")
+        XLog.i("开始替换 [dialog=$dialogId] 模型=$activeDisplay 提问=${pending.text}")
 
         scope.launch {
             try {
                 val history = if (cfg.enableHistory) buildHistory() else emptyList()
-                val req = cfg.toChatRequest(activeModel, history)
+                val req = cfg.toChatRequest(history)
                 val result = if (req == null) {
                     ChatResult.Failure("配置不完整", fatal = true)
                 } else {
@@ -271,7 +269,7 @@ internal class InterceptEngine {
         if (reply.isNullOrBlank()) {
             val reason = if (finished) pendingReply.note else "等待超时(${waitMs}ms)"
             XLog.w("未取得 AI 回答（$reason），放行原始回答")
-            recordDialog(dialogId, pending.text, originalText, activeModel.displayName, false, reason)
+            recordDialog(dialogId, pending.text, originalText, activeDisplay, false, reason)
             return false
         }
 
@@ -279,7 +277,7 @@ internal class InterceptEngine {
         val ok = rewrite(reply)
         if (ok) {
             XLog.i("替换成功 [dialog=$dialogId]: ${reply.take(60)}")
-            recordDialog(dialogId, pending.text, reply, activeModel.displayName, true, pendingReply.note)
+            recordDialog(dialogId, pending.text, reply, activeDisplay, true, pendingReply.note)
             rememberHistory(pending.text, reply)
         } else {
             XLog.w("写回 payload.$fieldName 失败，放行原始回答")

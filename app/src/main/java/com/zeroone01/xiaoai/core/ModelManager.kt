@@ -91,10 +91,12 @@ object ModelManager {
         XLog.init(context)
         val cfg = store.get()
         _configFlow.value = cfg
-        _activeModel.value = cfg.activeModel()
+        val active = cfg.activeProvider()
+        _activeModel.value = if (active.isXiaoAi) ModelId.XIAOAI
+        else active.providerType.toModelId()
         XLog.verbose = cfg.verboseLog
         initialized = true
-        XLog.i("ModelManager 初始化完成，dataDir=${dir.absolutePath} active=${_activeModel.value.displayName}")
+        XLog.i("ModelManager 初始化完成，dataDir=${dir.absolutePath} active=${active.displayName}")
     }
 
     /** 确保已初始化（Hook 侧拿到的 Context 可能是 App 的，也可能是模块的） */
@@ -115,7 +117,9 @@ object ModelManager {
         if (changed) {
             val cfg = store.get()
             _configFlow.value = cfg
-            _activeModel.value = cfg.activeModel()
+            val active = cfg.activeProvider()
+            _activeModel.value = if (active.isXiaoAi) ModelId.XIAOAI
+            else active.providerType.toModelId()
             XLog.verbose = cfg.verboseLog
         }
         return changed
@@ -126,19 +130,70 @@ object ModelManager {
         if (!initialized) return
         store.set(cfg)
         _configFlow.value = cfg
-        _activeModel.value = cfg.activeModel()
+        // 同步 activeModel StateFlow（沿用 ModelId 表示当前是「小爱」还是「第三方」）
+        val active = cfg.activeProvider()
+        _activeModel.value = if (active.isXiaoAi) ModelId.XIAOAI
+        else active.providerType.toModelId()
         XLog.verbose = cfg.verboseLog
+    }
+
+    /** 更新单个 provider；返回新的 AiConfig */
+    fun updateProvider(updated: ProviderConfig): AiConfig {
+        val cfg = config()
+        val newList = cfg.providers.map { if (it.key == updated.key) updated else it }
+        val newCfg = cfg.copy(providers = newList)
+        saveConfig(newCfg)
+        return newCfg
+    }
+
+    /** 新增一行；key 由模块生成 UUID */
+    fun addProvider(provider: ProviderConfig): AiConfig {
+        val cfg = config()
+        val newCfg = cfg.copy(providers = cfg.providers + provider)
+        saveConfig(newCfg)
+        return newCfg
+    }
+
+    /** 删除一行；key="xiaoai" 不允许删除 */
+    fun deleteProvider(key: String): AiConfig {
+        if (key == AiConfig.XIAOAI_KEY) {
+            XLog.w("尝试删除小爱原生行，已忽略")
+            return config()
+        }
+        val cfg = config()
+        val newList = cfg.providers.filter { it.key != key }
+        val newActive = if (cfg.activeModelKey == key) AiConfig.XIAOAI_KEY else cfg.activeModelKey
+        val newCfg = cfg.copy(providers = newList, activeModelKey = newActive)
+        saveConfig(newCfg)
+        return newCfg
+    }
+
+    /** 切换当前激活 provider */
+    fun setActiveProvider(key: String) {
+        val cfg = config()
+        val exists = cfg.providers.any { it.key == key }
+        if (!exists) {
+            XLog.w("尝试切换到不存在的 provider: $key")
+            return
+        }
+        saveConfig(cfg.copy(activeModelKey = key))
     }
 
     /** 切换模型，返回是否真的发生了变化 */
     fun switchModel(model: ModelId, source: String = "unknown"): Boolean {
         if (!initialized) return false
-        val current = _activeModel.value
-        saveConfig(store.get().copy(activeModelKey = model.key))
-        val changed = current != model
+        val cfg = store.get()
+        // 兼容旧路径：用 ModelId.key 去匹配新结构里 key="xiaoai" 的行
+        val targetKey = when (model) {
+            ModelId.XIAOAI -> AiConfig.XIAOAI_KEY
+            else -> cfg.providers.firstOrNull { !it.isXiaoAi && it.enabled }?.key
+                ?: return false
+        }
+        if (targetKey == cfg.activeModelKey) return false
+        saveConfig(cfg.copy(activeModelKey = targetKey))
         _events.tryEmit(ModuleEvent.ModelChanged(model, source))
-        XLog.i("模型切换: ${current.displayName} -> ${model.displayName} (来源: $source)")
-        return changed
+        XLog.i("模型切换: -> $targetKey (来源: $source)")
+        return true
     }
 
     fun setSwitching(value: Boolean) {

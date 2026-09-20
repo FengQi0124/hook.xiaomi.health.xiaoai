@@ -202,7 +202,11 @@ internal object SettingsPageInjector {
 
             setOnClickListener { v ->
                 runCatching {
-                    openSettings(v.context)
+                    val activity = (v.context as? Activity) ?: run {
+                        XLog.w("入口点击上下文不是 Activity，跳过拉起设置窗口")
+                        return@runCatching
+                    }
+                    openSettings(activity)
                 }.onFailure { XLog.e("打开设置窗口失败", it) }
             }
         }
@@ -268,12 +272,15 @@ internal object SettingsPageInjector {
 
     /**
      * 打开模块设置 UI。
+     *
+     * v0.1.0-beta5：必须传入 Activity —— 设置窗口现在挂在宿主 Activity 的 content 里
+     * （取代之前的 WindowManager 浮窗方案），不接受 Context/ApplicationContext。
      */
-    private fun openSettings(hostContext: Context) {
-        ModelManager.ensureInit(hostContext)
+    private fun openSettings(activity: Activity) {
+        ModelManager.ensureInit(activity)
         runCatching {
-            SettingsWindowController.show(hostContext)
-            XLog.i("已在 com.mi.health 进程内拉起设置窗口")
+            SettingsWindowController.show(activity)
+            XLog.i("已在 com.mi.health 进程内拉起设置窗口 (基于宿主 Activity content)")
         }.onFailure { XLog.e("SettingsWindowController.show() 失败", it) }
     }
 }

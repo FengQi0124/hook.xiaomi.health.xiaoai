@@ -113,6 +113,18 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
         log(Log.INFO, TAG, "进程: ${param.processName}  systemServer=${param.isSystemServer}")
         log(Log.INFO, TAG, "模块包: ${moduleApplicationInfo.packageName}")
 
+        // ★ 把框架 log() 通道桥接到 XLog —— 这样后续所有 XLog.i/w/e() 都会
+        //   同时出现在 LSPosed verbose 日志里。这是诊断 AIVS Hook 是否生效的
+        //   唯一可靠通道（XLog 文件/Logcat 用户不容易抓到）。
+        XLog.frameworkLogger = { priority, tag, msg ->
+            try {
+                log(priority, tag, msg)
+            } catch (_: Throwable) {
+                // frameworkLogger 永远不能抛异常（会污染业务日志）
+            }
+        }
+        XLog.i("[$TAG] XLog.frameworkLogger 已桥接（XLog 输出将进入 LSPosed verbose 日志）")
+
         // ModuleLoadedParam 没有 ClassLoader，没法做 createPackageContext，
         // 所以这里**不能**初始化文件日志——XLog.init(null) 会因为拿不到 Context
         // 而写出到宿主 dataDir。文件日志的真正落地在 onAppReady 里（此时有 Application）。

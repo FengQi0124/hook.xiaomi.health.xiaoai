@@ -21,9 +21,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Hook 进程的 Context 是 com.mi.health 的，filesDir 是宿主 dataDir；用
  * [Context.createPackageContext] 跨 uid 拿到模块自己的 filesDir，两边写同一份文件。
  *
+ * ## LSPosed 框架日志通道（关键）
+ * 普通 XLog 只走 Logcat/文件，**LSPosed verbose 日志里看不到**。
+ * [setFrameworkLogger] 由 XiaoAiHookEntry 在 onModuleLoaded 注册一个回调，
+ * 该回调内部调用 XposedModule.log() —— 这才是「用户在 LSPosed 管理器里能直接看到」
+ * 的通道。注册前 XLog 输出照常工作，注册后 I/W/E 会同时进入框架通道，
+ * 任何后续运行的模块就能在 LSPosed 日志里看到完整诊断信息。
+ *
  * 查看方式：
  *   adb logcat -s XiaoAiHijack:V
  *   adb shell run-as com.zeroone01.xiaoai cat /data/data/com.zeroone01.xiaoai/files/xiaoai.log
+ *   LSPosed 管理器 → 模块 → 「日志」（开启 verbose 即可看到框架通道输出）
  */
 object XLog {
 
@@ -46,6 +54,18 @@ object XLog {
 
     @Volatile
     private var logFile: File? = null
+
+    /**
+     * LSPosed 框架日志回调，签名兼容 `XposedModule.log(priority, tag, msg)`。
+     *
+     * 注册时机：[XiaoAiHookEntry.onModuleLoaded]。注册后所有 I/W/E 会**同时**走
+     * 框架通道（用户在 LSPosed 管理器里看 verbose 日志就能看到）。
+     *
+     * 之所以不直接持有 XposedModule 引用：XLog 在 UI 进程也会被调用，
+     * UI 进程里没有 XposedModule；用回调解耦后两边都能安全使用。
+     */
+    @Volatile
+    var frameworkLogger: ((priority: Int, tag: String, message: String) -> Unit)? = null
 
     /**
      * 初始化日志文件路径。由 [ModelManager.init] 在拿到 Context 后调用。
@@ -92,6 +112,20 @@ object XLog {
                 "I" -> Log.i(TAG, text)
                 else -> Log.d(TAG, text)
             }
+        }
+        // 1.5) LSPosed 框架通道（仅 I/W/E —— D 级别太吵）。注册后才有效。
+        //      路径：com.zeroone01.xiaoai 进程里调用是 no-op；Hook 进程里
+        //      XiaoAiHookEntry.onModuleLoaded 会把 frameworkLogger 接上，
+        //      把 XLog 的输出转发到 LSPosed verbose 日志。
+        runCatching {
+            val fw = frameworkLogger ?: return@runCatching
+            val priority = when (level) {
+                "E" -> Log.ERROR
+                "W" -> Log.WARN
+                "I" -> Log.INFO
+                else -> return@runCatching
+            }
+            fw(priority, TAG, text)
         }
         val timeShort = timeFmt.format(Date())
         val timeLong = dateFmt.format(Date())

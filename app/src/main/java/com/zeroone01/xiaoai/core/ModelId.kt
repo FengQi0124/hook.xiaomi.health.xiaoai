@@ -43,9 +43,21 @@ enum class ModelId(
         fun fromKey(key: String?): ModelId =
             entries.firstOrNull { it.key == key } ?: XIAOAI
 
-        /** 手环菜单序号 → 模型。序号 4 是“退出”，返回 null */
+/** 手环菜单序号 → 模型。序号 4 是"退出"，返回 null */
         fun fromMenuIndex(index: Int): ModelId? = menuModels.firstOrNull { it.menuIndex == index }
     }
+}
+
+/**
+ * 把新版 [ProviderType] 映射回旧版 [ModelId]，仅用于 [ModelManager._activeModel] 同步。
+ *
+ * 不在 AI 请求逻辑里使用 —— AI 请求用 providerKey。
+ */
+fun ProviderType.toModelId(): ModelId = when (this) {
+    ProviderType.XIAOAI -> ModelId.XIAOAI
+    ProviderType.DEEPSEEK -> ModelId.DEEPSEEK
+    ProviderType.ZHIPU -> ModelId.ZHIPU
+    else -> ModelId.CUSTOM
 }
 
 /** 单次对话的一条消息，OpenAI Chat Completions 格式 */
