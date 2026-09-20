@@ -8,6 +8,21 @@
 
 ---
 
+## v0.1.0-beta6 修复清单（2026-09-20）
+
+针对 beta5 用户反馈的 6 个问题，全部修复：
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 手环说「切换模型」没显示 / 手环上没有切换模型文字 | 重写 `DexClassScanner.resolveApkPaths`，同时读 `Element.path`（现代 Android ART 懒加载导致 `dexFile.getName()` 返回 null）+ 用 `HostEnv.hostApkPath/splitSourceDirs`（`XposedModule` framework 直接给的）兜底；新增 `Message.getPayload()` 通用分发钩子，避开 dispatch 候选解析失败的 case；`hookDispatchMethods` 排除 `findClass`（之前误挂到 `AIApiNameMapping` 链路断裂）。 |
+| 2 | 选择模型是开关、不要下拉菜单 | `ProviderTypeSelector` 重写为「点击当前类型行展开 → 列出所有候选 → 点「选择」按钮」的 radio list 形态（无 Popup 依赖，避开宿主 Resources 异常）。 |
+| 3 | 预设了几行没填 API 的空配置 | `AiConfig.defaultProviders()` 只返回 XIAOAI 一行；`FileConfigStore.loadFromDisk()` 过滤 `key startsWith("preset-") && apiKey/baseUrl/model 全空` 的残留行（兼容从 beta5 升上来的 JSON）。 |
+| 4 | 点 TextField 直接崩回主页 | `createPackageContext("com.zeroone01.xiaoai")` 在 Android 11+ 上因 `<queries>` 未声明而失败（旧版 fallback 到宿主 Resources → Compose `PopupLayout.createLayoutParams` 找 `R.string.popup_window_title` 找不到 → `Resources$NotFoundException: String resource ID #0x7f0a000e`）；新版 `HostEnv.buildModuleContext` 用 `XposedModule.moduleApplicationInfo` + `PackageManager.getResourcesForApplication(ApplicationInfo)`（公开 API，绕过包可见性）拿模块真正的 Resources，`ContextWrapper` 替换 `getResources/getAssets/getPackageName`。 |
+| 5 | 诊断页 back 直接退到「我的」 | 旧 `OnBackPressedDispatcher` 永远 `dismiss()`；新方案把 `showDiag` 提到 `SettingsContent` 内用 `DisposableEffect` 注入 `navStateProvider` / `hideDiagnosticsRequested` 到 controller，back 在诊断子页时通知 Compose 把 `showDiag` 设回 false（回主设置页）而不是关闭整个窗口。 |
+| 6 | 没推到 GitHub | 已在本地 commit（`8c4eb0b`），等代理修复后 push。 |
+
+---
+
 ## 一、原理与关键 Hook 点分析
 
 ### 1.1 原脚本为什么能work
@@ -224,6 +239,7 @@ xiaoai/
             │   ├── AiConfig.kt          # 配置数据类
             │   ├── ConfigStore.kt       # 存储接口
             │   ├── FileConfigStore.kt   # JSON 文件存储（跨进程）
+            │   ├── HostEnv.kt           # 模块 / 宿主的 ApplicationInfo/APK 路径缓存
             │   └── ModelManager.kt      # 全局单例（StateFlow）
             ├── net/
             │   └── AiClient.kt          # OpenAI 兼容客户端（SSE 流式）
