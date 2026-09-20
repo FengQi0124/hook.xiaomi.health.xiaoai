@@ -204,6 +204,17 @@ object SettingsWindowController {
         private val savedStateController = SavedStateRegistryController.create(this)
 
         init {
+            // ★ 关键：把自己注册为 ViewTree 的所有者。
+            //
+            // Compose 内部的 WindowRecomposer 是从 View 树根（这里是 DecorRootView）
+            // 向上找 ViewTreeLifecycleOwner 的。DecorRootView 本身实现了 LifecycleOwner
+            // 接口但接口不会被 Compose 自动发现——必须显式调用 setViewTree... 注入。
+            // 不然 AbstractComposeView.resolveComposeViewContext 会报
+            // "ViewTreeLifecycleOwner not found from DecorRootView"，把宿主 App 一起带崩。
+            setViewTreeLifecycleOwner(this)
+            setViewTreeViewModelStoreOwner(this)
+            setViewTreeSavedStateRegistryOwner(this)
+
             savedStateController.performAttach()
             savedStateController.performRestore(null)
             // 注册 SavedStateProvider：API 1.x 需要在 SavedStateRegistry 上注册。
