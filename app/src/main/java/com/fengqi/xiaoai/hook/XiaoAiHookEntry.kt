@@ -47,8 +47,9 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
     companion object {
         /** 目标包名（不同版本/渠道不同，全部覆盖） */
         private val TARGET_PACKAGES = setOf(
-            "com.xiaomi.wearable",   // 小米运动健康（国际/新版）
-            "com.xiaomi.hm.health",  // 小米运动健康（国内旧版）
+            "com.mi.health",          // 小米运动健康（3.59.1+，com.xiaomi.wearable 被替换）
+            "com.xiaomi.wearable",    // 小米运动健康（国际/老版）
+            "com.xiaomi.hm.health",   // 小米运动健康（国内旧版）
         )
 
         @Volatile
@@ -70,9 +71,8 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val pkg = lpparam.packageName
-        // 只有系统框架和目标 App 需要处理
+        // 只处理系统框架和目标 App（其它包一律不浪费 CPU）
         if (pkg != "android" && pkg !in TARGET_PACKAGES) return
-        if (pkg !in TARGET_PACKAGES) return
 
         XLog.i("命中目标进程: $pkg (process=${lpparam.processName})")
         isHookedTarget = true

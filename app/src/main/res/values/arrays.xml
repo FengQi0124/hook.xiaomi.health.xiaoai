@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Xposed 作用域：小米运动健康（不同版本包名不同，两个都声明） -->
+    <!-- Xposed 作用域：小米运动健康（不同版本包名不同，全部声明） -->
     <string-array name="xposed_scope">
+        <item>com.mi.health</item>
         <item>com.xiaomi.wearable</item>
         <item>com.xiaomi.hm.health</item>
     </string-array>

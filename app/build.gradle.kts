@@ -24,8 +24,8 @@ android {
         applicationId = "com.fengqi.xiaoai"
         minSdk = 24
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.4"
     }
 
     // 使用 release 签名以便 LSPosed 正常加载（debug 签名亦可，这里统一用调试密钥）

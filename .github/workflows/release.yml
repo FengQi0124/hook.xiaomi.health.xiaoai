@@ -40,14 +40,22 @@ jobs:
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
-      - name: 缓存 Gradle
+      - name: 缓存 Gradle 安装包
+        id: gradle_cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml') }}
-          restore-keys: gradle-${{ runner.os }}-
+          path: /opt/gradle-9.3.1
+          key: gradle-9.3.1-bin
+
+      - name: 安装 Gradle 9.3.1（AGP 9.1.0 要求）
+        if: steps.gradle_cache.outputs.cache-hit != 'true'
+        run: |
+          sudo curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+          sudo mkdir -p /opt && sudo unzip -q /tmp/gradle.zip -d /opt
+          sudo rm -rf /opt/gradle-9.3.1
+          sudo mv /opt/gradle-9.3.1 /opt/gradle-9.3.1-tmp 2>/dev/null || true
+          sudo mv /opt/gradle-9.3.1-tmp /opt/gradle-9.3.1 2>/dev/null || true
+          /opt/gradle-9.3.1/bin/gradle --version | head -3
 
       - name: 创建 local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
@@ -60,10 +68,10 @@ jobs:
       - name: 构建 Release APK
         run: |
           chmod +x gradlew 2>/dev/null || true
-          gradle :app:assembleRelease --no-daemon
+          /opt/gradle-9.3.1/bin/gradle :app:assembleRelease --no-daemon
 
       - name: 构建 Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: /opt/gradle-9.3.1/bin/gradle :app:assembleDebug --no-daemon
 
       - name: 整理产物
         run: |
