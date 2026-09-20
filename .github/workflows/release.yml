@@ -188,4 +188,19 @@ jobs:
               --generate-notes \
               out/*
           fi
+
+          # ── 清理历史遗留的错误命名资产 ──────────────────────────────
+          # 曾经出现过「tag 是 beta2、APK 文件名却是 beta1」的问题，
+          # --clobber 只覆盖同名文件，所以那些旧名字的资产会一直留着，
+          # 用户很容易下错。这里把不属于当前版本 V 的同名系列资产全部删掉。
+          echo "── 清理非当前版本($V)的 apk 资产 ──"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+          | grep -E '^xiaomi-health-xiaoai-.*\.apk$' \
+          | grep -v -- "-${V}-" \
+          | while read -r stale; do
+              echo "  删除历史资产: $stale"
+              gh release delete-asset "$TAG" "$stale" -R "$GITHUB_REPOSITORY" --yes
+            done || true
+
+          echo "── 最终资产清单 ──"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes"'
