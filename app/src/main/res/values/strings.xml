@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">小爱助手增强</string>
-    <string name="xposed_description">将小米运动健康的小爱同学替换为第三方 AI（DeepSeek/智谱/自定义），支持手环语音切换模型</string>
+    <!--
+        模块显示名。注意：这个名字会出现在 LSPosed 模块列表里，
+        必须让人一眼看出这是给「小米运动健康 + 手环/手表」用的，
+        避免被误认为是手机版小爱同学的模块。
+    -->
+    <string name="app_name">手环小爱增强（小米运动健康）</string>
+    <string name="xposed_description">【仅限小米运动健康 App / 小米手环·手表】把手环语音助手「小爱同学」的回答接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），支持在手环上语音切换模型。</string>
 </resources>

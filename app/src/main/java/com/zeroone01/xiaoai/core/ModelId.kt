@@ -1,10 +1,10 @@
-package com.fengqi.xiaoai.core
+package com.zeroone01.xiaoai.core
 
 /**
  * 模型标识。
  *
  * 设计说明：这里只定义“预设”模型。`CUSTOM` 是一个占位符，实际请求参数
- * 从 [com.fengqi.xiaoai.data.AiConfig] 的 custom 字段读取。
+ * 从 [com.zeroone01.xiaoai.data.AiConfig] 的 custom 字段读取。
  *
  * 序号（用于手环语音选择）：
  *  1 = XIAOAI（小爱同学，原生，不劫持）

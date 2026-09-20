@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.core
+package com.zeroone01.xiaoai.core
 
 import kotlinx.serialization.json.Json
 import java.io.File

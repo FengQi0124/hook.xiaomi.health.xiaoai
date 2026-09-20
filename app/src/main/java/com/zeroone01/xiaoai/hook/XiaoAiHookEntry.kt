@@ -1,9 +1,9 @@
-package com.fengqi.xiaoai.hook
+package com.zeroone01.xiaoai.hook
 
 import android.app.Application
 import android.content.Context
-import com.fengqi.xiaoai.core.ModelManager
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.ModelManager
+import com.zeroone01.xiaoai.core.XLog
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.XC_MethodHook
@@ -110,7 +110,7 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
             // 1) 让反射层拿到宿主 ClassLoader —— 这是所有后续查找的基础
             Reflector.ClassLoaderHolder.loader = lpparam.classLoader
 
-            // 1.5) Hook 跑在 com.mi.health 进程，UI 跑在 com.fengqi.xiaoai 进程。
+            // 1.5) Hook 跑在 com.mi.health 进程，UI 跑在 com.zeroone01.xiaoai 进程。
             //      XLog.init(ctx) 内部会用 createPackageContext 跨 uid 拿到模块自己的
             //      filesDir，让两边日志落在同一路径。ModelManager.init 会顺带调用。
             //      这一行只为了让"路径已就绪"出现在最早的日志里。
@@ -132,9 +132,9 @@ class XiaoAiHookEntry : IXposedHookLoadPackage, IXposedHookZygoteInit {
             runCatching { installHooks(lpparam, e) }
                 .onFailure { XLog.e("安装 Hook 失败", it) }
 
-            // 5) 注入「我的」页面入口
+            // 5) 注入「设置」页面入口
             if (ModelManager.config().injectMineEntry) {
-                runCatching { MinePageInjector.install(lpparam, ctx) }
+                runCatching { SettingsPageInjector.install(lpparam, ctx) }
                     .onFailure { XLog.e("注入 UI 入口失败", it) }
 
                 // 终乐观标记：LSPosed 接入成功

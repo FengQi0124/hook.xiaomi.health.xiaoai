@@ -218,7 +218,7 @@ xiaoai/
         │       ├── java_init.list
         │       └── scope.list
         ├── res/                     # 图标 / 主题 / 字符串
-        └── java/com/fengqi/xiaoai/
+        └── java/com/zeroone01/xiaoai/
             ├── XiaoAiApplication.kt
             ├── core/
             │   ├── XLog.kt              # 日志门面（环形缓冲 + logcat）

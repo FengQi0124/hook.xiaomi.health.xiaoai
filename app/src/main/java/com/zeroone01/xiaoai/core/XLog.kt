@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.core
+package com.zeroone01.xiaoai.core
 
 import android.content.Context
 import android.util.Log
@@ -23,7 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * 查看方式：
  *   adb logcat -s XiaoAiHijack:V
- *   adb shell run-as com.fengqi.xiaoai cat /data/data/com.fengqi.xiaoai/files/xiaoai.log
+ *   adb shell run-as com.zeroone01.xiaoai cat /data/data/com.zeroone01.xiaoai/files/xiaoai.log
  */
 object XLog {
 
@@ -51,16 +51,16 @@ object XLog {
      * 初始化日志文件路径。由 [ModelManager.init] 在拿到 Context 后调用。
      *
      * 关键：Hook 进程拿到的 Context 是宿主（com.mi.health）的，写文件会落到
-     * /data/data/com.mi.health/files/，UI 进程（com.fengqi.xiaoai）没权限读。
+     * /data/data/com.mi.health/files/，UI 进程（com.zeroone01.xiaoai）没权限读。
      * 用 [Context.createPackageContext] 拿到模块自己的 Context（不受 uid 限制），
-     * 这样 Hook 进程也能把日志写到 /data/data/com.fengqi.xiaoai/files/，
+     * 这样 Hook 进程也能把日志写到 /data/data/com.zeroone01.xiaoai/files/，
      * UI 进程读同一路径即可。
      */
     fun init(context: Context) {
         try {
             val moduleCtx = try {
                 context.createPackageContext(
-                    "com.fengqi.xiaoai",
+                    "com.zeroone01.xiaoai",
                     Context.CONTEXT_IGNORE_SECURITY,
                 )
             } catch (_: Throwable) { null } ?: context

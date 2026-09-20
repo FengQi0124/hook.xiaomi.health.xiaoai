@@ -1,11 +1,11 @@
-package com.fengqi.xiaoai.hook
+package com.zeroone01.xiaoai.hook
 
-import com.fengqi.xiaoai.core.ChatMessage
-import com.fengqi.xiaoai.core.ChatResult
-import com.fengqi.xiaoai.core.ModelId
-import com.fengqi.xiaoai.core.ModelManager
-import com.fengqi.xiaoai.core.XLog
-import com.fengqi.xiaoai.net.AiClient
+import com.zeroone01.xiaoai.core.ChatMessage
+import com.zeroone01.xiaoai.core.ChatResult
+import com.zeroone01.xiaoai.core.ModelId
+import com.zeroone01.xiaoai.core.ModelManager
+import com.zeroone01.xiaoai.core.XLog
+import com.zeroone01.xiaoai.net.AiClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

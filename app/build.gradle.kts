@@ -14,18 +14,19 @@ val localProps = Properties().apply {
 }
 
 android {
-    namespace = "com.fengqi.xiaoai"
+    namespace = "com.zeroone01.xiaoai"
     compileSdk = 37
     // Android 37 是一个「次版本」SDK（package id: platforms;android-37.0），
     // AGP 9 起通过 compileSdkMinor 指定次版本号。
     compileSdkMinor = 0
 
     defaultConfig {
-        applicationId = "com.fengqi.xiaoai"
+        applicationId = "com.zeroone01.xiaoai"
         minSdk = 24
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.2.4"
+        // 测试版：从 0.1.0 起步，versionCode 从 1 开始重新计数
+        versionCode = 1
+        versionName = "0.1.0-beta1"
     }
 
     // 使用 release 签名以便 LSPosed 正常加载（debug 签名亦可，这里统一用调试密钥）

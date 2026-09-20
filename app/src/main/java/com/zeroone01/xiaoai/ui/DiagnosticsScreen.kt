@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.ui
+package com.zeroone01.xiaoai.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,8 +18,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.fengqi.xiaoai.core.ModelManager
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.ModelManager
+import com.zeroone01.xiaoai.core.XLog
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.SmallTitle

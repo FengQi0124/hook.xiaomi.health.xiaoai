@@ -77,8 +77,8 @@ jobs:
         run: |
           mkdir -p out
           V="${{ steps.ver.outputs.version }}"
-          cp app/build/outputs/apk/release/app-release.apk "out/xiaoai-${V}-release.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk   "out/xiaoai-${V}-debug.apk"
+          cp app/build/outputs/apk/release/app-release.apk "out/xiaomi-health-xiaoai-${V}-release.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk   "out/xiaomi-health-xiaoai-${V}-debug.apk"
           cd out && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt
 
       - name: 上传构建产物

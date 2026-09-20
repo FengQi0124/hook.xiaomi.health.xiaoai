@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.core
+package com.zeroone01.xiaoai.core
 
 import kotlinx.serialization.Serializable
 
@@ -69,7 +69,7 @@ data class AiConfig(
     /** 是否输出详细日志 */
     val verboseLog: Boolean = true,
 
-    /** 是否在“我的”页面注入入口 */
+    /** 是否在小米运动健康的「设置」页面注入入口 */
     val injectMineEntry: Boolean = true,
 ) {
     fun activeModel(): ModelId = ModelId.fromKey(activeModelKey)

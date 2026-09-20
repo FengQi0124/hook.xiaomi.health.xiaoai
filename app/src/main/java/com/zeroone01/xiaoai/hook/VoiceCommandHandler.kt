@@ -1,8 +1,8 @@
-package com.fengqi.xiaoai.hook
+package com.zeroone01.xiaoai.hook
 
-import com.fengqi.xiaoai.core.ModelId
-import com.fengqi.xiaoai.core.ModelManager
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.ModelId
+import com.zeroone01.xiaoai.core.ModelManager
+import com.zeroone01.xiaoai.core.XLog
 
 /**
  * 手环语音指令处理器。

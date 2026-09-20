@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.ui
+package com.zeroone01.xiaoai.ui
 
 import android.content.Context
 import android.graphics.Color
@@ -28,8 +28,8 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import com.fengqi.xiaoai.core.ModelManager
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.ModelManager
+import com.zeroone01.xiaoai.core.XLog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -66,7 +66,7 @@ object SettingsWindowController {
         // 模块自己的 Context —— 取主题、字符串、density 等资源（确保 Miuix 主题生效）
         val moduleCtx = runCatching {
             hostContext.createPackageContext(
-                "com.fengqi.xiaoai",
+                "com.zeroone01.xiaoai",
                 Context.CONTEXT_IGNORE_SECURITY,
             )
         }.getOrElse {

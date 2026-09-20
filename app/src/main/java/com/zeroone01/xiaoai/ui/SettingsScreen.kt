@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.ui
+package com.zeroone01.xiaoai.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -36,9 +36,9 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import com.fengqi.xiaoai.core.AiConfig
-import com.fengqi.xiaoai.core.ModelId
-import com.fengqi.xiaoai.core.ProviderConfig
+import com.zeroone01.xiaoai.core.AiConfig
+import com.zeroone01.xiaoai.core.ModelId
+import com.zeroone01.xiaoai.core.ProviderConfig
 
 /**
  * 设置页主界面（Miuix / Compose）。
@@ -229,8 +229,8 @@ fun SettingsScreen(
                 )
                 HorizontalDivider()
                 SwitchRow(
-                    title = "在「我的」页面显示入口",
-                    summary = "在小米运动健康的「我的路线库」和「App设置」之间插入入口。",
+                    title = "在「设置」页面显示入口",
+                    summary = "在小米运动健康的「设置」列表里插入一行「AI 助手增强」，与原生设置项外观一致。",
                     checked = config.injectMineEntry,
                     onCheckedChange = { onSave(config.copy(injectMineEntry = it)) },
                 )

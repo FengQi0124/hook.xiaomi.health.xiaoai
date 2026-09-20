@@ -1,6 +1,6 @@
-package com.fengqi.xiaoai.hook
+package com.zeroone01.xiaoai.hook
 
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.XLog
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Optional

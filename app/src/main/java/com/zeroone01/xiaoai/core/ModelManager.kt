@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.core
+package com.zeroone01.xiaoai.core
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -80,10 +80,10 @@ object ModelManager {
         if (initialized) return
         // 兼容「在宿主进程里跑」的情况：Hook 后 com.mi.health 进程的 context.filesDir
         // 是宿主的 dataDir (/data/data/com.mi.health/)，但配置要写到模块自己的 dataDir
-        // (/data/data/com.fengqi.xiaoai/) 才能跨进程共享。
+        // (/data/data/com.zeroone01.xiaoai/) 才能跨进程共享。
         // 用 createPackageContext 跨 uid 拿到模块自己的 Context，再取 filesDir。
         val moduleCtx = runCatching {
-            context.createPackageContext("com.fengqi.xiaoai", Context.CONTEXT_IGNORE_SECURITY)
+            context.createPackageContext("com.zeroone01.xiaoai", Context.CONTEXT_IGNORE_SECURITY)
         }.getOrNull() ?: context
         val dir = moduleCtx.filesDir
         store = FileConfigStore(File(dir, "xiaoai_config.json"))

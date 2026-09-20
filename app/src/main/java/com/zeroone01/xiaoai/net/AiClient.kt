@@ -1,8 +1,8 @@
-package com.fengqi.xiaoai.net
+package com.zeroone01.xiaoai.net
 
-import com.fengqi.xiaoai.core.ChatRequest
-import com.fengqi.xiaoai.core.ChatResult
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.ChatRequest
+import com.zeroone01.xiaoai.core.ChatResult
+import com.zeroone01.xiaoai.core.XLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json

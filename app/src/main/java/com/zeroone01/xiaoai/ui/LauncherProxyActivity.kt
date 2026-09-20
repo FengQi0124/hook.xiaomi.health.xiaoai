@@ -1,9 +1,9 @@
-package com.fengqi.xiaoai.ui
+package com.zeroone01.xiaoai.ui
 
 import android.app.Activity
 import android.os.Bundle
-import com.fengqi.xiaoai.core.ModelManager
-import com.fengqi.xiaoai.core.XLog
+import com.zeroone01.xiaoai.core.ModelManager
+import com.zeroone01.xiaoai.core.XLog
 
 /**
  * 透明代理 Activity。

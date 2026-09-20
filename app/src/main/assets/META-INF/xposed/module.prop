@@ -1,5 +1,5 @@
-name=XiaoAi Assistant Hijack
-version=1.2.4
-versionCode=5
-author=FengQi0124
-description=小米运动健康 小爱同学语音助手劫持：接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），支持手环语音切换模型
+name=小米运动健康·手环小爱增强
+version=0.1.0-beta1
+versionCode=1
+author=ZeroOne01
+description=【仅用于小米运动健康 App + 小米手环/手表】把手环上喊「小爱同学」的问答接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），可在手环语音里切换模型。注意：本模块只对小米运动健康生效，与手机版小爱同学无关。

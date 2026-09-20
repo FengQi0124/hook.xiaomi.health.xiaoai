@@ -1,4 +1,4 @@
-package com.fengqi.xiaoai.core
+package com.zeroone01.xiaoai.core
 
 /**
  * 配置存储。
