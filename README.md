@@ -211,12 +211,10 @@ xiaoai/
     ├── proguard-rules.pro
     └── src/main/
         ├── AndroidManifest.xml
-        ├── assets/
-        │   ├── xposed_init
-        │   └── META-INF/xposed/
-        │       ├── module.prop
-        │       ├── java_init.list
-        │       └── scope.list
+        ├── resources/META-INF/xposed/   # ★ 必须在 resources，Gradle 才会打进 APK 根目录
+        │   ├── module.prop              #   minApiVersion / targetApiVersion 为必填
+        │   ├── java_init.list           #   入口类全限定名
+        │   └── scope.list               #   作用域包名
         ├── res/                     # 图标 / 主题 / 字符串
         └── java/com/zeroone01/xiaoai/
             ├── XiaoAiApplication.kt
@@ -230,13 +228,15 @@ xiaoai/
             ├── net/
             │   └── AiClient.kt          # OpenAI 兼容客户端（SSE 流式）
             ├── hook/
-            │   ├── Reflector.kt         # 反射工具（Optional 解包）
+            │   ├── Reflect.kt           # 自研反射工具（替代已移除的 XposedHelpers）
+            │   ├── HookCompat.kt        # API 102 拦截器链 → before/after 适配层
+            │   ├── Reflector.kt         # 业务用反射工具（Optional 解包）
             │   ├── DexClassScanner.kt   # 手写 DEX 字符串扫描器
             │   ├── AivsModel.kt         # AIVS 类/字段解析
             │   ├── VoiceCommandHandler.kt # 语音指令状态机
             │   ├── InterceptEngine.kt   # 拦截核心（阻塞等待 + 替换）
-            │   ├── MinePageInjector.kt  # "我的"页注入
-            │   └── XiaoAiHookEntry.kt   # 主入口 + ApiRegistry
+            │   ├── SettingsPageInjector.kt # 「设置」页入口注入
+            │   └── XiaoAiHookEntry.kt   # 主入口（XposedModule）+ ApiRegistry
             └── ui/
                 ├── SettingsActivity.kt  # 设置页容器
                 ├── SettingsScreen.kt    # Miuix 设置界面
@@ -363,7 +363,7 @@ I/XiaoAiHijack: MinePageInjector 已挂载
 | Kotlin | 2.3.20 | |
 | Compose Multiplatform | 1.12.0-rc01 | |
 | Miuix | 0.9.4-rc01 | HyperOS 风格 UI |
-| Xposed API | 82 | `compileOnly` |
+| Xposed API | **102**（libxposed 现代 API） | `compileOnly`，`io.github.libxposed:api` |
 | OkHttp | 4.12.0 | 网络 |
 | kotlinx.serialization | 1.9.0 | JSON |
 | kotlinx.coroutines | 1.10.2 | 异步 |
