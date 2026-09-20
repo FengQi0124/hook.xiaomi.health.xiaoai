@@ -2,9 +2,13 @@ package com.zeroone01.xiaoai.hook
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.zeroone01.xiaoai.core.ModelManager
@@ -16,56 +20,30 @@ import java.util.Collections
 /**
  * 「设置」页面入口注入器。
  *
- * ## 逆向结论（基于小米运动健康 3.59.1，classes10.dex / classes13.dex）
+ * ## 设计决策（v0.1.0-beta3 之后）
  *
- * 设置页 `com.xiaomi.fitness.about.setting.SettingActivity`：
- *  - 继承 `com.xiaomi.fitness.baseui.view.BaseBindingActivity`，使用 **ViewBinding**；
- *  - binding 类是 `Li00;`（混淆后名），根容器字段为 `N`，类型 `miuix.core.widget.NestedScrollView`；
- *  - 其余字段全部是小米自研的「设置项」控件：
+ * 之前尝试「实例化宿主的 `RightArrowBindingSingleLineTextView` 然后 setTitle」——
+ * 现场实测两种症状：
+ *  1. 新建项跟原生项**视觉重叠**（位置算错）；
+ *  2. 点击**直接崩溃**宿主 App（setter 内部状态访问出错）。
  *
- *    | 字段 | 类型 | 说明 |
- *    |---|---|---|
- *    | `C` | `LinearLayout` | 分组内容容器 |
- *    | `B` | `ConstraintLayout` | 顶层布局 |
- *    | `L` `K` `E` `H` `M` | `RightArrowBindingSingleLineTextView` | 单行「文字 + 右箭头」项 |
- *    | `I` `J` `F` | `SwitchButtonBindingTwoLineTextView` | 「两行文字 + 开关」项 |
- *    | `A` `O` | `RightArrowTwoLineTextView` | 双行「文字 + 右箭头」项 |
- *    | `G` | `View` | 分隔线 |
+ * 根因是这个类是 ViewBinding 生成的：
+ *  - 构造需要 AttributeSet，否则主题/样式没套上；
+ *  - 内部 TextView 字段在 inflate 之后才被赋值，单参构造器拿不到；
+ *  - setTitle 内部对 null 字段操作会抛 NPE，把宿主 App 带走。
  *
- * 其中 `RightArrowBindingSingleLineTextView` 继承 `RightArrowSingleLineTextView`，
- * 对外 API（来自 classes13.dex）：
- *  - `setTitle(String / Int)`
- *  - `setRemindText(String / SpannableString / Int)` —— 右侧灰色小字
- *  - `setIcon(Drawable / Int / String)`
- *  - `setRightTextWithDot(String)`
- *
- * ## 注入策略
- * 本注入器**不新建自己的 View**，而是：
- *  1. Hook `SettingActivity.onCreate(Bundle)` 的 after；
- *  2. 通过 `BaseBindingActivity.getMBinding()` 拿到 binding 对象，反射取出根容器 `N`；
- *  3. 反射 **实例化宿主的 `RightArrowBindingSingleLineTextView`**，调用它的 `setTitle` /
- *     `setRemindText` 设置文案，再挂上 `OnClickListener`；
- *  4. 把它 addView 到根容器（`NestedScrollView` → 唯一的子 `LinearLayout`）里。
- *
- * 这样得到的是一个**货真价实的宿主原生控件**：主题、字体、水波纹、暗黑模式、
- * 内边距全部自动与「账号与安全」「清理缓存」等原生项完全一致，不会有任何割裂感。
- *
- * ## 兜底
- * 若上述任一环节失败（比如换了版本、类名/字段名变了），自动降级为
- * [fallbackInjectByText]：遍历 View 树找到原生设置项的公共父容器，插入自绘 View。
- * 两条路都失败时只记日志，绝不崩溃宿主。
+ * ## 新方案
+ * 直接画一个模仿 HyperOS 设置项外观的 **纯自绘 View**：
+ *  - 单行、左侧标题、右侧灰色 ›、带点击波纹；
+ *  - 插入到 `NestedScrollView` 根容器的**第一个**子 ViewGroup 末尾；
+ *  - 整个过程**不允许抛任何异常**，try/catch + null 检查全部到位。
+ *  - 视觉跟原生项不是 100% 一致，但**能用、不会崩**——这是当前唯一硬性约束。
  */
 internal object SettingsPageInjector {
 
-    /** 设置页 Activity 的类名（3.59.1 实测；不同版本可能不同，用前缀匹配兜底） */
     private const val SETTING_ACTIVITY = "com.xiaomi.fitness.about.setting.SettingActivity"
-
-    /** ViewBinding 基类，提供 getMBinding()；用它比直接用具体 binding 类名更抗混淆 */
     private const val BASE_BINDING_ACTIVITY = "com.xiaomi.fitness.baseui.view.BaseBindingActivity"
-
-    /** 宿主原生「单行 + 右箭头」设置项控件 */
-    private const val ITEM_CLASS = "com.xiaomi.fitness.widget.RightArrowBindingSingleLineTextView"
-
+    private const val SCROLL_VIEW_TYPE = "miuix.core.widget.NestedScrollView"
     private const val INJECT_TAG = "xiaoai_settings_entry"
     private const val ENTRY_TITLE = "AI 助手增强"
     private const val ENTRY_SUMMARY = "手环小爱接入第三方 AI"
@@ -74,13 +52,6 @@ internal object SettingsPageInjector {
 
     // ==================================================================
 
-    /**
-     * 安装注入器（现代 API 版本）。
-     *
-     * @param module 模块实例，提供 Hook 能力
-     * @param loader 宿主 ClassLoader（由 PackageLoadedParam 提供）
-     * @param app    宿主 Application（由 PackageReadyParam 提供），用作 View 的 Context
-     */
     fun install(module: ModuleBridge, loader: ClassLoader, app: Context) {
         hookSettingActivity(module, loader)
         XLog.i("已安装「设置」页面注入器（目标: $SETTING_ACTIVITY）")
@@ -88,13 +59,12 @@ internal object SettingsPageInjector {
 
     private fun hookSettingActivity(module: ModuleBridge, loader: ClassLoader) {
         val activityClass = Reflect.findClass(SETTING_ACTIVITY, loader)
-
         if (activityClass != null) {
             hookOnCreate(module, activityClass)
             return
         }
 
-        // 模糊匹配：某些版本类名可能不同，按包名 + 类名后缀找
+        // 模糊匹配：不同版本类名可能不同
         XLog.w("未找到 $SETTING_ACTIVITY，尝试模糊匹配…")
         DexClassScanner.scan(loader)
             .filter { it.endsWith("about.setting.SettingActivity") || it.endsWith("SettingActivity") }
@@ -104,8 +74,6 @@ internal object SettingsPageInjector {
     }
 
     private fun hookOnCreate(module: ModuleBridge, activityClass: Class<*>) {
-        // 只挂真正的 onCreate(Bundle)，避免把 onCreate(...) 的重载和
-        // 各种 Hilt/Binding 版本全挂一遍导致重复注入。
         val onCreate = activityClass.declaredMethods.firstOrNull {
             it.name == "onCreate" &&
                 it.parameterCount == 1 &&
@@ -119,12 +87,12 @@ internal object SettingsPageInjector {
             return
         }
 
-        val ok = HookCompat.hook(
+        HookCompat.hook(
             module, onCreate,
             after = { ctx ->
                 val activity = ctx.thisObject as? Activity ?: return@hook
                 if (isAlreadyInjected(activity)) return@hook
-                // 等布局完成（ViewBinding 已 inflate 完）
+                // 用 post() 等 ViewBinding 完全 inflate 完再插入，避免和原生 inflate 撞车
                 activity.window?.decorView?.post {
                     runCatching { tryInject(activity) }
                         .onFailure { XLog.d("注入设置页入口失败: ${it.message}") }
@@ -132,11 +100,7 @@ internal object SettingsPageInjector {
             },
             tag = "${activityClass.simpleName}#onCreate",
         )
-        if (ok) {
-            XLog.i("已 Hook ${activityClass.simpleName}#onCreate")
-        } else {
-            XLog.w("Hook ${activityClass.simpleName}#onCreate 失败")
-        }
+        XLog.i("已 Hook ${activityClass.simpleName}#onCreate")
     }
 
     private fun isAlreadyInjected(activity: Activity): Boolean {
@@ -152,218 +116,150 @@ internal object SettingsPageInjector {
     // ==================================================================
 
     private fun tryInject(activity: Activity) {
-        val decor = activity.window?.decorView ?: return
-        if (decor.findViewWithTag<View>(INJECT_TAG) != null) return
+        // 已经插过 → 直接返回
+        if (findInjectedEntry(activity.window?.decorView) != null) return
 
-        // ---------- 路线 1：用宿主原生控件注入（首选） ----------
-        if (injectNativeItem(activity, decor)) {
-            injected.add(WeakReference(activity))
+        val scroll = findScrollContainer(activity) ?: run {
+            XLog.d("找不到滚动容器（${SCROLL_VIEW_TYPE}），放弃注入")
+            return
+        }
+        val target = scroll.getChildAt(0) as? ViewGroup ?: run {
+            XLog.d("滚动容器没有子 ViewGroup，放弃注入")
             return
         }
 
-        // ---------- 路线 2：自绘 View 兜底 ----------
-        XLog.w("原生控件注入失败，降级为自绘 View")
-        if (fallbackInjectByText(activity, decor)) {
+        // ★ 关键：再保险一次，target 不能为空、必须能加子 View
+        if (target.childCount == 0 && target !is android.widget.FrameLayout && target !is android.widget.LinearLayout) {
+            // 容器是空的，且不是常见可添加子 View 的类型，不冒险
+            XLog.d("目标容器类型=${target.javaClass.name} 不确定能 addView，放弃注入")
+            return
+        }
+
+        val entry = buildEntryView(activity)
+        entry.tag = INJECT_TAG
+
+        // 插入到目标容器的**末尾**（而不是 +1 位置）—— 最不容易和原生子 View 撞坐标
+        val inserted = runCatching {
+            target.addView(entry)
+            true
+        }.onFailure {
+            XLog.d("addView 到 ${target.javaClass.simpleName} 失败: ${it.message}")
+        }.getOrDefault(false)
+
+        if (inserted) {
             injected.add(WeakReference(activity))
+            XLog.i(
+                "✓ 已用自绘 View 在「设置」页注入入口 " +
+                    "(target=${target.javaClass.simpleName}, total=${target.childCount})"
+            )
+        } else {
+            XLog.w("自绘 View 注入失败")
         }
     }
 
     /**
-     * 首选方案：实例化宿主的 `RightArrowBindingSingleLineTextView`，
-     * 外观与「账号与安全」「清理缓存」等原生设置项 100% 一致。
+     * 构造「设置项」风格的 View。模仿 HyperOS 设置项外观：
+     *  - 浅色背景；
+     *  - 左标题 + 右灰色 ›；
+     *  - 整行可点击（带水波纹依赖主题，未带则降级为颜色反馈）。
      */
-    private fun injectNativeItem(activity: Activity, decor: View): Boolean {
-        val loader = activity.classLoader
-
-        // 1) 拿 binding：BaseBindingActivity.getMBinding()
-        //    用 BaseBindingActivity 做锚点比直接用混淆后的具体 binding 类名抗版本差异。
-        val bindingActivityClass = Reflect.findClass(BASE_BINDING_ACTIVITY, loader)
-        val binding = Reflect.callMethod(activity, "getMBinding")
-            ?: bindingActivityClass?.methods?.firstOrNull {
-                it.parameterCount == 0 && it.returnType.name.contains("databinding")
-            }?.let { m ->
-                runCatching { m.isAccessible = true; m.invoke(activity) }.getOrNull()
-            }
-            ?: return false
-
-        // 2) 从 binding 里找 NestedScrollView（根滚动容器）
-        val scroll = findFieldByTypeOrName(binding, "miuix.core.widget.NestedScrollView", "N")
-            as? ViewGroup ?: return false
-
-        // 3) 找原生单行设置项，用它所属的父容器作为插入目标
-        val itemClass = Reflect.findClass(ITEM_CLASS, loader) ?: run {
-            XLog.d("找不到原生设置项控件 $ITEM_CLASS")
-            return false
-        }
-
-        val nativeItem = findFirstChildOfType(scroll, itemClass) ?: return false
-        val parent = nativeItem.parent as? ViewGroup ?: return false
-
-        // 4) 实例化一个新的设置项（用宿主 Class，所以主题/样式全自动）
-        val newItem = runCatching {
-            val ctor = itemClass.getDeclaredConstructor(Context::class.java)
-            ctor.isAccessible = true
-            ctor.newInstance(activity)
-        }.getOrNull() as? View ?: Reflect.newInstance(itemClass, activity) as? View
-            ?: return false
-
-        newItem.tag = INJECT_TAG
-
-        // 5) 设置文案。
-        //
-        // 关键：setTitle / setRemindText 的入参是**重载**的
-        //   setTitle(String) / setTitle(Int)
-        //   setRemindText(String) / setRemindText(SpannableString) / setRemindText(Int)
-        // 我们传 String，但 Reflect.callMethod 内部可能按「参数个数」宽松匹配到
-        // 接收 `Int`（资源 id）的那个重载 —— 那会把中文字符串当成资源 id 去查表，
-        // 轻则文案不显示，重则 Resources$NotFoundException。
-        // 所以这里必须**按参数类型精确**挑方法：只接受形参为 String/CharSequence 的那个。
-        invokeTextSetter(newItem, "setTitle", ENTRY_TITLE)
-        invokeTextSetter(newItem, "setRemindText", ENTRY_SUMMARY, fallback = "setReminText")
-
-        // 6) 点击打开模块设置窗口
-        newItem.setOnClickListener { v -> openSettings(v.context) }
-        newItem.isClickable = true
-
-        // 7) 插入：紧跟原生第一项之后
-        return runCatching {
-            val idx = (0 until parent.childCount)
-                .firstOrNull { parent.getChildAt(it) === nativeItem } ?: 0
-            parent.addView(newItem, (idx + 1).coerceIn(0, parent.childCount))
-            XLog.i("✓ 已用宿主原生控件在「设置」页注入入口 (parent=${parent.javaClass.simpleName}, index=${idx + 1})")
-            true
-        }.getOrElse {
-            XLog.w("addView 原生项失败: ${it.message}")
-            false
-        }
-    }
-
-    /**
-     * 兜底方案：在 View 树里找原生设置项（`RightArrowBindingSingleLineTextView`）的
-     * 公共父容器，插入自绘 View。
-     */
-    private fun fallbackInjectByText(activity: Activity, decor: View): Boolean {
-        val loader = activity.classLoader
-        val itemClass = Reflect.findClass(ITEM_CLASS, loader) ?: return false
-
-        val root = decor as? ViewGroup ?: return false
-        val anchor = findFirstChildOfType(root, itemClass) ?: return false
-        val parent = anchor.parent as? ViewGroup ?: return false
-
-        val entry = buildFallbackView(activity).apply { tag = INJECT_TAG }
-        return runCatching {
-            val idx = (0 until parent.childCount)
-                .firstOrNull { parent.getChildAt(it) === anchor } ?: 0
-            parent.addView(entry, (idx + 1).coerceIn(0, parent.childCount))
-            XLog.i("✓ 已用兜底自绘 View 注入设置页入口")
-            true
-        }.getOrElse {
-            XLog.w("兜底注入失败: ${it.message}")
-            false
-        }
-    }
-
-    private fun buildFallbackView(context: Context): View {
+    private fun buildEntryView(context: Context): View {
         val density = context.resources.displayMetrics.density
         fun dp(v: Int) = (v * density + 0.5f).toInt()
 
+        // 整个 View 是一个 LinearLayout，承载「标题 + 右箭头」
         return LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
             isClickable = true
+            isFocusable = true
+            // 用一个浅色背景模拟设置项"卡片"——很多人其实看不出和原生做分隔
+            background = GradientDrawable().apply {
+                setColor(0xFFF5F5F5.toInt())
+                cornerRadius = dp(8).toFloat()
+            }
 
             addView(TextView(context).apply {
                 text = ENTRY_TITLE
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                setTextColor(0xFF111111.toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f,
+                )
+            })
 
             addView(TextView(context).apply {
                 text = "›"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-                setTextColor(android.graphics.Color.parseColor("#999999"))
+                setTextColor(0xFF999999.toInt())
+                setPadding(dp(8), 0, 0, 0)
             })
 
-            setOnClickListener { v -> openSettings(v.context) }
+            setOnClickListener { v ->
+                runCatching {
+                    openSettings(v.context)
+                }.onFailure { XLog.e("打开设置窗口失败", it) }
+            }
         }
     }
 
     /**
-     * 精确调用一个「接收文本」的 setter。
+     * 找 NestedScrollView 根容器。
      *
-     * 为什么不能直接用 `Reflect.callMethod`：那个方法是**宽松匹配**的（同名 + 参数个数），
-     * 而 `setTitle` / `setRemindText` 都是重载 —— 既有 `(String)` 也有 `(Int)`。
-     * 传一个中文字符串进去，若匹配到 `(Int)` 重载，宿主会把它当资源 id 去查表，
-     * 轻则文案空白，重则抛 `Resources$NotFoundException` 让设置页崩溃。
-     *
-     * 所以这里只挑形参是 String / CharSequence / Object 的那个重载。
-     *
-     * @param fallback 备用方法名（宿主版本间可能改名/拼写不同）
-     * @return 是否成功调用
+     * 为什么按类型名匹配而不用类：宿主 App 用了 NestedScrollView 这种系统类而不是
+     * AppCompat 自定义。Binding 类根字段 `N` 是它，但我们其实只需要确认它存在。
      */
-    private fun invokeTextSetter(
-        target: Any,
-        methodName: String,
-        text: String,
-        fallback: String? = null,
-    ): Boolean {
-        val names = listOfNotNull(methodName, fallback)
-
-        for (name in names) {
-            val m = Reflect.findMethodsByName(target.javaClass, name)
-                .firstOrNull { it.parameterCount == 1 && it.acceptsText() }
-                ?: continue
-            val ok = runCatching { m.invoke(target, text); true }.getOrDefault(false)
-            if (ok) {
-                XLog.d("已设置文案 $name(\"$text\")")
-                return true
-            }
+    private fun findScrollContainer(activity: Activity): ViewGroup? {
+        // 优先用 binding 拿到的根（ViewBinding 的 field 名 "N"，更精确）
+        val binding = Reflect.callMethod(activity, "getMBinding")
+        if (binding != null) {
+            val v = findFieldByTypeName(binding, SCROLL_VIEW_TYPE)
+            if (v is ViewGroup) return v
         }
-
-        XLog.d("$methodName 调用失败（没有接收 String 的重载），新项可能显示为空")
-        return false
+        // 退而求其次：遍历 decorView 找 NestedScrollView
+        return findFirstChildOfType(activity.window?.decorView, SCROLL_VIEW_TYPE) as? ViewGroup
     }
 
-    /** 该方法的唯一形参是否能安全接收一个 String */
-    private fun java.lang.reflect.Method.acceptsText(): Boolean {
-        val p = parameterTypes[0]
-        return p == String::class.java ||
-            p == CharSequence::class.java ||
-            p == Any::class.java ||
-            p.isAssignableFrom(String::class.java)
+    /** 按字段类型名找第一个匹配字段 */
+    private fun findFieldByTypeName(obj: Any, typeName: String): Any? {
+        var cls: Class<*>? = obj.javaClass
+        while (cls != null) {
+            cls.declaredFields.firstOrNull { it.type.name == typeName }?.let { f ->
+                f.isAccessible = true
+                runCatching { return f.get(obj) }
+            }
+            cls = cls.superclass
+        }
+        return null
     }
 
-    // ==================================================================
-
-    /** 在 View 树里找第一个指定类型的子 View */
-    private fun findFirstChildOfType(root: View, clazz: Class<*>, depth: Int = 0): View? {
-        if (depth > 40) return null
-        if (clazz.isInstance(root) && root !is ViewGroup) return root
+    /** 在 View 树里找第一个指定类型的子 View（按类型全限定名） */
+    private fun findFirstChildOfType(root: View?, typeName: String, depth: Int = 0): View? {
+        if (root == null || depth > 40) return null
+        if (root.javaClass.name == typeName && root is ViewGroup) return root
         if (root is ViewGroup) {
             for (i in 0 until root.childCount) {
-                val child = root.getChildAt(i)
-                if (clazz.isInstance(child)) return child
-                findFirstChildOfType(child, clazz, depth + 1)?.let { return it }
+                val c = root.getChildAt(i)
+                if (c.javaClass.name == typeName && c is ViewGroup) return c
+                findFirstChildOfType(c, typeName, depth + 1)?.let { return it }
             }
         }
         return null
     }
 
-    /** 反射从对象里取字段：先按名字找，找不到再按类型名匹配第一个 */
-    private fun findFieldByTypeOrName(obj: Any, typeName: String, preferredName: String): Any? {
-        // 按名字（含继承链）
-        Reflect.get<Any>(obj, preferredName)?.let { return it }
-
-        // 按类型（含父类）
-        var c: Class<*>? = obj.javaClass
-        while (c != null) {
-            c.declaredFields.firstOrNull { it.type.name == typeName }?.let { f ->
-                runCatching {
-                    f.isAccessible = true
-                    return f.get(obj)
-                }
+    /** 找已注入的入口 View（用于防重复） */
+    private fun findInjectedEntry(root: View?): View? {
+        if (root == null) return null
+        if (root.tag == INJECT_TAG) return root
+        if (root is ViewGroup) {
+            for (i in 0 until root.childCount) {
+                findInjectedEntry(root.getChildAt(i))?.let { return it }
             }
-            c = c.superclass
         }
         return null
     }
@@ -372,9 +268,6 @@ internal object SettingsPageInjector {
 
     /**
      * 打开模块设置 UI。
-     *
-     * 用 [SettingsWindowController] 在 com.mi.health 进程内以 WindowManager 子窗口渲染，
-     * 与 Hook 同进程、同 Context、同内存实例，零延迟。
      */
     private fun openSettings(hostContext: Context) {
         ModelManager.ensureInit(hostContext)
