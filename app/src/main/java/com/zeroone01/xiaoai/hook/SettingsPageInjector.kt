@@ -200,22 +200,26 @@ internal object SettingsPageInjector {
         val parent = nativeItem.parent as? ViewGroup ?: return false
 
         // 4) 实例化一个新的设置项（用宿主 Class，所以主题/样式全自动）
-        val newItem = Reflect.newInstance(itemClass, activity) as? View
-            ?: Reflect.newInstance(itemClass, activity, null) as? View
+        val newItem = runCatching {
+            val ctor = itemClass.getDeclaredConstructor(Context::class.java)
+            ctor.isAccessible = true
+            ctor.newInstance(activity)
+        }.getOrNull() as? View ?: Reflect.newInstance(itemClass, activity) as? View
             ?: return false
 
         newItem.tag = INJECT_TAG
 
-        // 5) 设置文案（setTitle / setRemindText 均来自 RightArrowSingleLineTextView）
-        if (Reflect.callMethod(newItem, "setTitle", ENTRY_TITLE) == null) {
-            XLog.d("setTitle 未生效，尝试 setTitleRes / setText")
-            Reflect.callMethod(newItem, "setTitleRes", ENTRY_TITLE)
-            Reflect.callMethod(newItem, "setText", ENTRY_TITLE)
-        }
-
-        if (Reflect.callMethod(newItem, "setRemindText", ENTRY_SUMMARY) == null) {
-            Reflect.callMethod(newItem, "setReminText", ENTRY_SUMMARY)
-        }
+        // 5) 设置文案。
+        //
+        // 关键：setTitle / setRemindText 的入参是**重载**的
+        //   setTitle(String) / setTitle(Int)
+        //   setRemindText(String) / setRemindText(SpannableString) / setRemindText(Int)
+        // 我们传 String，但 Reflect.callMethod 内部可能按「参数个数」宽松匹配到
+        // 接收 `Int`（资源 id）的那个重载 —— 那会把中文字符串当成资源 id 去查表，
+        // 轻则文案不显示，重则 Resources$NotFoundException。
+        // 所以这里必须**按参数类型精确**挑方法：只接受形参为 String/CharSequence 的那个。
+        invokeTextSetter(newItem, "setTitle", ENTRY_TITLE)
+        invokeTextSetter(newItem, "setRemindText", ENTRY_SUMMARY, fallback = "setReminText")
 
         // 6) 点击打开模块设置窗口
         newItem.setOnClickListener { v -> openSettings(v.context) }
@@ -282,6 +286,51 @@ internal object SettingsPageInjector {
 
             setOnClickListener { v -> openSettings(v.context) }
         }
+    }
+
+    /**
+     * 精确调用一个「接收文本」的 setter。
+     *
+     * 为什么不能直接用 `Reflect.callMethod`：那个方法是**宽松匹配**的（同名 + 参数个数），
+     * 而 `setTitle` / `setRemindText` 都是重载 —— 既有 `(String)` 也有 `(Int)`。
+     * 传一个中文字符串进去，若匹配到 `(Int)` 重载，宿主会把它当资源 id 去查表，
+     * 轻则文案空白，重则抛 `Resources$NotFoundException` 让设置页崩溃。
+     *
+     * 所以这里只挑形参是 String / CharSequence / Object 的那个重载。
+     *
+     * @param fallback 备用方法名（宿主版本间可能改名/拼写不同）
+     * @return 是否成功调用
+     */
+    private fun invokeTextSetter(
+        target: Any,
+        methodName: String,
+        text: String,
+        fallback: String? = null,
+    ): Boolean {
+        val names = listOfNotNull(methodName, fallback)
+
+        for (name in names) {
+            val m = Reflect.findMethodsByName(target.javaClass, name)
+                .firstOrNull { it.parameterCount == 1 && it.acceptsText() }
+                ?: continue
+            val ok = runCatching { m.invoke(target, text); true }.getOrDefault(false)
+            if (ok) {
+                XLog.d("已设置文案 $name(\"$text\")")
+                return true
+            }
+        }
+
+        XLog.d("$methodName 调用失败（没有接收 String 的重载），新项可能显示为空")
+        return false
+    }
+
+    /** 该方法的唯一形参是否能安全接收一个 String */
+    private fun java.lang.reflect.Method.acceptsText(): Boolean {
+        val p = parameterTypes[0]
+        return p == String::class.java ||
+            p == CharSequence::class.java ||
+            p == Any::class.java ||
+            p.isAssignableFrom(String::class.java)
     }
 
     // ==================================================================
