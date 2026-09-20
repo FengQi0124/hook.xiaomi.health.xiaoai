@@ -85,10 +85,22 @@ jobs:
       - name: 创建 local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      # ── 版本号以 git tag 为准 ────────────────────────────────────────
+      # 之前这里是从 build.gradle.kts 里 grep versionName，结果打 beta2 的 tag
+      # 却产出叫 beta1 的 APK 文件（build.gradle 忘了同步改）。
+      # 打成 tag 的构建，版本号必须由 tag 决定，两者不可能再不一致。
       - name: 确定版本号
         id: ver
         run: |
-          echo "version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)" >> $GITHUB_OUTPUT
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            V="${GITHUB_REF#refs/tags/}"
+            V="${V#v}"                       # 去掉前缀 v，文件名里不需要
+            echo "来源: git tag -> $V"
+          else
+            V=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+            echo "来源: build.gradle.kts -> $V"
+          fi
+          echo "version=$V" >> $GITHUB_OUTPUT
 
       - name: 构建 Release APK
         run: |
