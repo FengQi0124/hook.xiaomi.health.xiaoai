@@ -28,6 +28,7 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.zeroone01.xiaoai.core.HostEnv
 import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.XLog
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
@@ -66,6 +67,20 @@ object SettingsWindowController {
     @Volatile private var backCallback: OnBackPressedCallback? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * 由 [SettingsContent] 在 DisposableEffect 里注册：
+     *  - [navStateProvider] 返回当前是否在「诊断子页」（仅 Compose 内部状态，
+     *    dispatcher 不能直接读 —— 走这个 lambda 让回调访问）；
+     *  - [onShowDiagRequested] 让非 Compose 代码（如调试入口）触发打开诊断页。
+     */
+    @Volatile private var navStateProvider: () -> Boolean = { false }
+    @Volatile private var onShowDiagRequested: (() -> Unit)? = null
+
+    /** 公开：让外部代码主动触发打开诊断子页（诊断页 1.5s 轮询自己拿最新状态） */
+    fun openDiagnostics() {
+        onShowDiagRequested?.invoke()
+    }
+
     /** 是否已显示 */
     fun isShowing(): Boolean = attached != null
 
@@ -83,14 +98,26 @@ object SettingsWindowController {
         }
 
         // 模块自己的 Context —— 取主题、字符串、density 等资源
-        val moduleCtx = runCatching {
-            hostActivity.createPackageContext(
-                "com.zeroone01.xiaoai",
-                Context.CONTEXT_IGNORE_SECURITY,
-            )
-        }.getOrElse {
-            XLog.w("获取模块 Context 失败，使用宿主 Context：${it.message}")
-            hostActivity
+        //
+        // ★ 关键修复（v0.1.0-beta6）：
+        //   旧实现用 `hostActivity.createPackageContext("com.zeroone01.xiaoai", …)`
+        //   会在 Android 11+ 上失败（"Application package not found"），因为宿主 manifest
+        //   没声明 `<queries>`。失败后 fallback 到 hostActivity，导致 ComposeView
+        //   用宿主的 Resources 渲染 —— 一旦用户点 TextField，compose-ui 的
+        //   PopupLayout.createLayoutParams 会找 R.string.popup_window_title，找不到就
+        //   `Resources$NotFoundException: String resource ID #0x7f0a000e`，
+        //   整个宿主进程被 SIGSYS 杀回桌面。
+        //
+        //   新实现走 [HostEnv.buildModuleContext] —— 用 framework 提供的模块
+        //   `moduleApplicationInfo` + `PackageManager.getResourcesForApplication(ApplicationInfo)`
+        //   这条**公开 API**（不依赖 package visibility），拿到模块真正的 Resources 后用
+        //   ContextWrapper 替换 getResources/getAssets/getPackageName。TextField 触发
+        //   PopupLayout 时拿到的就是模块的 compose-ui 字符串，不再崩溃。
+        val moduleCtx = HostEnv.moduleAppInfo?.let { moduleInfo ->
+            HostEnv.buildModuleContext(hostActivity, moduleInfo)
+        } ?: hostActivity
+        if (HostEnv.moduleAppInfo == null) {
+            XLog.w("模块 ApplicationInfo 未缓存，使用宿主 Context（TextField 可能崩溃）：${moduleCtx.packageName}")
         }
 
         ModelManager.ensureInit(hostActivity)
@@ -194,14 +221,48 @@ object SettingsWindowController {
                 ?: return@runCatching
             val callback = object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    XLog.d("宿主按 back → dismiss 设置窗口（不冒泡到 Activity.finish）")
-                    dismiss()
+                    // ★ 关键（v0.1.0-beta6）：
+                    //   旧实现永远 dismiss()——结果用户在「诊断子页」按 back 时，
+                    //   整个设置窗口被关闭，再按一次 back 就退到宿主 Activity 的"我的"页。
+                    //   现在的逻辑：
+                    //    - 当前在「诊断子页」→ 走 [navStateProvider]，让 Compose 层
+                    //      自己处理（DiagnosticsScreen.onBack 把 showDiag 设为 false）；
+                    //    - 当前在主设置页 → 走 dismiss() 关闭整个设置窗口。
+                    //
+                    //   因为 navStateProvider 是 lambda（不可重写 handleOnBackPressed
+                    //   的 onBackPressed 把控制权交给 Compose 实际是不可能的），
+                    //   这里用一个简单的"尝试往主线程 post 一次 onBack 模拟"的方案：
+                    //   把 back 触发给 DiagnosticsScreen 自带的"返回"按钮（点击）。
+                    if (navStateProvider()) {
+                        // 让 DiagnosticsScreen 的 onBack 触发（通过模拟点击返回按钮）——
+                        // 但实际上更直接的是 Dispatchers.Main post 一段 lambda 把
+                        // showDiag 改回 false。这里把 controller 的 back 简单地视为
+                        // "通知 Compose 子页自己处理"。
+                        XLog.d("宿主按 back → 在诊断子页，转发给 Compose 层处理")
+                        // 用 root 的 view 树 post 一次 onBack 请求：
+                        root.post {
+                            // 通过 root 的 listener 触发子页的 onBack：
+                            // 因为 Composable 里 showDiag 是 State，需要拿到 recompose
+                            // 的入口。最简单可靠的做法是在 controller 上提供一个
+                            // "隐藏诊断"回调，下面 DisposableEffect 里挂上。
+                            hideDiagnosticsRequested?.invoke()
+                        }
+                    } else {
+                        XLog.d("宿主按 back → dismiss 设置窗口（不冒泡到 Activity.finish）")
+                        dismiss()
+                    }
                 }
             }
             dispatcher.addCallback(activity, callback)
             backCallback = callback
         }.onFailure { XLog.w("OnBackPressedDispatcher 注册失败，回退到传统 back 键拦截: ${it.message}") }
     }
+
+    /**
+     * 由 [SettingsContent] 在 DisposableEffect 里注册：
+     *  - 当宿主按 back 且当前在「诊断子页」，外部 Compose 代码执行这个回调把 showDiag 改回 false。
+     */
+    @Volatile private var hideDiagnosticsRequested: (() -> Unit)? = null
 
     // ======================================================================
     // 深色模式判定
@@ -219,7 +280,29 @@ object SettingsWindowController {
     @Composable
     private fun SettingsContent(isDarkTheme: Boolean, onClose: () -> Unit) {
         val cfg by ModelManager.configFlow.collectAsState()
+
+        // ★ 把 showDiag 提到这里（而不是 OnBackPressedDispatcher 的 lambda 里）。
+        //   旧实现把 onBack = { showDiag = false } 写在 lambda 内部，宿主按 back 键时
+        //   回调先走到 dispatcher，回调只 dismiss——结果是把"诊断页"连同整个设置
+        //   窗口一起关掉，再按一次 back 就退到 Activity.finish() → "我的"页。
+        //   这里让 onBack 正确通知 dispatcher 关闭的是「诊断层」而不是「整个设置窗口」。
         var showDiag by remember { mutableStateOf(false) }
+
+        // 把 showDiag 同步到 controller 的局部字段 —— 用 DisposableEffect 注入
+        androidx.compose.runtime.DisposableEffect(Unit) {
+            navStateProvider = { showDiag }
+            onShowDiagRequested = { showDiag = true }
+            // ★ beta6 修复：在诊断子页按 back 时不再把整个设置窗口关掉，而是通知
+            //   Compose 子树把 showDiag 设回 false（切回主设置页）。这样 back 行为：
+            //   主设置页 → 关闭整个窗口；诊断子页 → 退回主设置页；再按一次才关窗口。
+            hideDiagnosticsRequested = { showDiag = false }
+            onDispose {
+                navStateProvider = { false }
+                onShowDiagRequested = null
+                hideDiagnosticsRequested = null
+            }
+        }
+
         // v0.1.0-beta5：跟随宿主的深色模式。
         // MiuixTheme(controller = ThemeController(colorSchemeMode = Dark/Light))
         // 会强制覆盖 Compose 子树的颜色方案，不再依赖宿主主题。

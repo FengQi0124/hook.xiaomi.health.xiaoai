@@ -88,10 +88,20 @@ class FileConfigStore(private val file: File) : ConfigStore {
             XLog.w("按新版解析配置失败，尝试旧版迁移：${firstErr.message}")
             tryMigrateLegacy(text) ?: throw firstErr
         }
+        // ★ beta6 修复：清理「从 beta5 残留的、没人填的预设行」（key 以 preset- 开头
+        //   且 apiKey / baseUrl / model 全部为空）——否则用户从 beta5 升上来还会看见
+        //   一堆空行，体验差。
+        val cleaned = parsed.providers.filterNot { p ->
+            p.isXiaoAi == false &&
+                p.key.startsWith("preset-") &&
+                p.apiKey.isBlank() &&
+                p.baseUrl.isBlank() &&
+                p.model.isBlank()
+        }
         // 补齐默认列表里缺失的行（仅追加，不删用户的）
         val defaults = AiConfig.defaultProviders()
-        val existingKeys = parsed.providers.map { it.key }.toSet()
-        val augmented = parsed.providers + defaults.filter { it.key !in existingKeys }
+        val existingKeys = cleaned.map { it.key }.toSet()
+        val augmented = cleaned + defaults.filter { it.key !in existingKeys }
         // 保证 XIAOAI 在第一位
         val reordered = augmented.sortedBy { if (it.isXiaoAi) 0 else 1 }
         val merged = parsed.copy(providers = reordered)

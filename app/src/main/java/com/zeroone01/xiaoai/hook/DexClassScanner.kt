@@ -1,5 +1,6 @@
 package com.zeroone01.xiaoai.hook
 
+import com.zeroone01.xiaoai.core.HostEnv
 import com.zeroone01.xiaoai.core.XLog
 import java.io.File
 import java.util.jar.JarFile
@@ -74,19 +75,39 @@ internal object DexClassScanner {
                 } as? Array<*> ?: return@runCatching
                 dexElements.forEach { element ->
                     if (element == null) return@forEach
+                    val elemClass = element.javaClass
+                    // 字段 1：dexFile.getName()（legacy：element.dexFile 是 DexFile，
+                    //   getName() 返回 APK 路径）
                     runCatching {
-                        val dexFile = element.javaClass.getDeclaredField("dexFile").let {
+                        val dexFile = elemClass.getDeclaredField("dexFile").let {
                             it.isAccessible = true; it.get(element)
                         }
-                        val path = dexFile?.javaClass?.getDeclaredMethod("getName")?.let {
-                            it.isAccessible = true; it.invoke(dexFile) as? String
+                        if (dexFile != null) {
+                            val name = dexFile.javaClass.getDeclaredMethod("getName").let {
+                                it.isAccessible = true; it.invoke(dexFile) as? String
+                            }
+                            if (!name.isNullOrBlank()) paths.add(name)
                         }
-                        if (path != null) paths.add(path)
+                    }
+                    // 字段 2：element.path（modern Android 上更可靠 —— DexFile 是懒加载的，
+                    //   element 自身持有 path File；dexFile.getName() 在 ART 上可能返回 null）
+                    runCatching {
+                        val pathField = elemClass.getDeclaredField("path").let {
+                            it.isAccessible = true; it.get(element)
+                        } as? File
+                        pathField?.absolutePath?.takeIf { it.isNotBlank() }?.let { paths.add(it) }
                     }
                 }
             }
             cl = cl.parent
         }
+
+        // ★ 兜底：现代 Android 上 ClassLoader 链里 dexFile 都是懒加载的，
+        //   getName() 可能直接返回 null；这时从宿主 ApplicationInfo 拿 sourceDir/splitSourceDirs
+        //   一定可靠（这是 [XposedModule] framework 直接给的）。
+        HostEnv.hostApkPath?.let { paths.add(it) }
+        HostEnv.hostSplitApkPaths.forEach { paths.add(it) }
+
         return paths.toList()
     }
 

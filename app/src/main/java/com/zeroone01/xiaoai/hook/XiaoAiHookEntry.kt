@@ -3,6 +3,7 @@ package com.zeroone01.xiaoai.hook
 import android.app.Application
 import android.content.Context
 import android.util.Log
+import com.zeroone01.xiaoai.core.HostEnv
 import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.XLog
 import io.github.libxposed.api.XposedInterface
@@ -113,6 +114,12 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
         log(Log.INFO, TAG, "进程: ${param.processName}  systemServer=${param.isSystemServer}")
         log(Log.INFO, TAG, "模块包: ${moduleApplicationInfo.packageName}")
 
+        // ★ 把模块自己的 ApplicationInfo 写入 HostEnv —— 这是后面 SettingsWindowController
+        //   拿模块 Context 的唯一可靠通道（避开 Android 11+ 的 <queries> 包可见性限制）。
+        //   XposedModule.moduleApplicationInfo 是 framework 直接给的，不受可见性影响。
+        runCatching { HostEnv.cacheModuleAppInfo(moduleApplicationInfo) }
+            .onFailure { XLog.e("[$TAG] 缓存模块 ApplicationInfo 失败", it) }
+
         // ★ 把框架 log() 通道桥接到 XLog —— 这样后续所有 XLog.i/w/e() 都会
         //   同时出现在 LSPosed verbose 日志里。这是诊断 AIVS Hook 是否生效的
         //   唯一可靠通道（XLog 文件/Logcat 用户不容易抓到）。
@@ -160,6 +167,11 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
         XLog.i("[$TAG] 🎯 命中目标进程: $pkg（首次=${param.isFirstPackage}）")
         isHookedTarget = true
 
+        // 把宿主的 ApplicationInfo 写入 HostEnv，供 DexClassScanner 兜底扫描 APK 用
+        runCatching {
+            param.applicationInfo?.let { HostEnv.cacheHostAppInfo(it) }
+        }.onFailure { XLog.e("[$TAG] 缓存宿主 ApplicationInfo 失败", it) }
+
         // 兜底：万一 onPackageReady 没被调用（个别 ROM），至少反射层有个 loader 可用
         Reflector.ClassLoaderHolder.loader = param.defaultClassLoader
     }
@@ -183,12 +195,17 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
         Reflector.ClassLoaderHolder.loader = loader
         XLog.i("[$TAG] PackageReady: $pkg，ClassLoader=${loader.javaClass.name}")
 
-        // 1) 安装 AIVS Hook（类级 Hook，这一步之后就生效）
-        runCatching { installAivsHooks(loader) }
+        // 1) 拿 Application —— DexClassScanner 现在依赖 HostEnv 缓存的宿主 APK 路径，
+        //    我们希望它在 installAivsHooks 之前就被填好。同时 installAivsHooks 也
+        //    需要 application 用来后续 ModelManager.init(app)。
+        val app = appFrom(loader)
+
+        // 2) 安装 AIVS Hook（类级 Hook，这一步之后就生效）
+        runCatching { installAivsHooks(loader, app) }
             .onFailure { XLog.e("[$TAG] 安装 AIVS Hook 失败", it) }
 
-        // 2) 初始化配置 + 注入设置页入口（需要 Application）
-        val app = appFrom(loader) ?: run {
+        // 3) 初始化配置 + 注入设置页入口（需要 Application）
+        if (app == null) {
             XLog.w("[$TAG] 拿不到 Application，改挂 Application.attach 兜底")
             hookApplicationAttach(pkg, loader)
             return
@@ -279,7 +296,7 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
     // 2. 安装消息 Hook
     // ==================================================================
 
-    private fun installAivsHooks(loader: ClassLoader) {
+    private fun installAivsHooks(loader: ClassLoader, app: Application?) {
         val model = AivsModel.get()
 
         if (!model.resolved) {
@@ -297,6 +314,8 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
         installed += hookDispatchMethods(loader, e, model)
         installed += hookApiNameMapping(loader, model)
         installed += hookJsonFallback(loader, e, model)
+        // getPayload 兜底不强依赖 app；installAivsHooks 里 app 为 null 也照常挂上。
+        installed += hookMessageGetPayload(loader, e, model)
 
         XLog.i("[$TAG] Hook 安装完成，共安装 $installed 个 Hook 点")
         if (installed == 0) {
@@ -342,6 +361,10 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
 
         val skipNames = setOf(
             "toString", "hashCode", "equals", "clone", "writeReplace", "readResolve",
+            // ★ findClass 是 ApiNameMapping 的内部方法，已被 hookApiNameMapping 专门处理；
+            //   不应该在分发钩子里再挂一次（之前误挂导致 model 误把 AIApiNameMapping 当成
+            //   「唯一的消息候选类」）
+            "findClass",
         )
 
         candidateClasses.forEach { owner ->
@@ -579,6 +602,81 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
             }
         }
         return count
+    }
+
+    // ---------------------------------------------------------------- 2.4 Message.getPayload 通用兜底
+
+    /**
+     * Hook `Message.getPayload()` 作为**最底层兜底**。
+     *
+     * ## 为什么需要这一层
+     * AIVS 的 Java/Kotlin 层任何「消费 payload」的地方，**一定**会调用
+     * `Message.getPayload()`（不管它后续是用 `instanceof` 判断、还是直接 `getText()`）。
+     *
+     * 之前只在「Message 子类自身的分发方法」上挂 Hook —— 但如果 Message 类被混淆了
+     * 或者它的子类方法名也被混淆了，dispatch 钩子就完全挂不上、链路上完全断掉。
+     *
+     * 钩 `getPayload()` 直接覆盖了这种 case：
+     *  - 它一定存在（逆向报告明确指出 `public Object getPayload()`）；
+     *  - 它返回的是 payload 对象本身，刚好可以在这里把 Cloud→App 的 payload 改写。
+     *
+     * ## 实现细节
+     *  - 用 `after` 钩子读 `thisObject`（Message 实例）+ `result`（payload）；
+     *  - 拿到的是**已经被原生代码解析好的** payload 对象，可以直接改字段（`setText` /
+     *    `setMarkdownText`）；
+     *  - 通过 [model.isAnswerMessage] 判断「是不是要拦截的回答消息」；
+     *  - 因为 `getPayload` 会被调用多次（Message 的所有消费者都过这里），所以用一个
+     *    `processedMessages` Set 去重避免对同一个 Message 实例改写多次。
+     */
+    private val processedMessages = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<Any, kotlin.Boolean>()
+    )
+
+    private fun hookMessageGetPayload(
+        loader: ClassLoader,
+        engine: InterceptEngine,
+        model: AivsModel,
+    ): Int {
+        val mc = model.messageClass ?: run {
+            XLog.w("[$TAG] Message 类未解析，跳过 getPayload 通用钩子")
+            return 0
+        }
+        val getPayload = Reflect.findMethodsByName(mc, "getPayload")
+            .firstOrNull { it.parameterCount == 0 && it.returnType == Any::class.java }
+            ?: Reflect.findMethodsByName(mc, "getPayload")
+                .firstOrNull { it.parameterCount == 0 }
+            ?: run {
+                XLog.w("[$TAG] Message#getPayload() 方法未找到，跳过")
+                return 0
+            }
+        val ok = HookCompat.hook(
+            this, getPayload,
+            after = { ctx ->
+                runCatching {
+                    val self = ctx.thisObject ?: return@runCatching
+                    if (!processedMessages.add(self)) return@runCatching
+                    if (!model.isAnswerMessage(self)) return@runCatching
+                    val cfg = ModelManager.config()
+                    val name = model.nameOf(self).orEmpty()
+                    val isStream = name == AivsModel.NAME_TOAST_STREAM ||
+                        name == AivsModel.NAME_STYLE_TOAST_STREAM_START
+                    if (isStream && !cfg.hookToastStream) return@runCatching
+                    val payload = ctx.result as? Any ?: return@runCatching
+                    val handled = engine.onAnswerMessage(self) { text ->
+                        writeText(self, model.namespaceOf(self).orEmpty(), name, text)
+                    }
+                    if (handled) {
+                        engine.clearDirectText()
+                        XLog.d("[$TAG] getPayload 钩子替换成功 ($name)")
+                    }
+                }
+            },
+            tag = "${mc.simpleName}#getPayload",
+        )
+        return if (ok) {
+            XLog.i("[$TAG] 已 Hook ${mc.simpleName}#getPayload（通用分发兜底）")
+            1
+        } else 0
     }
 }
 

@@ -171,24 +171,18 @@ data class AiConfig(
                 "回答务必简洁，尽量控制在80字以内，不要使用 Markdown 格式，" +
                 "不要输出表情符号，因为你说的每一句话都会被读出来。"
 
-        /** 默认配置：第一行 = 小爱（不可删）；后面两行示例提供方（用户可删） */
+        /** 默认配置：只有一行 = 小爱（不可删）。
+         *
+         *  v0.1.0-beta6 修复：旧版本预置了 DeepSeek / 智谱 两行（key 分别为
+         *  `preset-deepseek` / `preset-zhipu`），但 apiKey/baseUrl/model 都是空，
+         *  用户第一次打开看见的就是一堆空白"待填"行——既不美观也容易误以为
+         *  模块已经配置好了。改成「干净启动」，用户需要第三方模型时点「+ 添加」自行新建。
+         */
         fun defaultProviders(): List<ProviderConfig> = listOf(
             ProviderConfig(
                 key = XIAOAI_KEY,
                 displayName = "小爱同学",
                 providerType = ProviderType.XIAOAI,
-                enabled = true,
-            ),
-            ProviderConfig(
-                key = "preset-deepseek",
-                displayName = "DeepSeek",
-                providerType = ProviderType.DEEPSEEK,
-                enabled = true,
-            ),
-            ProviderConfig(
-                key = "preset-zhipu",
-                displayName = "智谱",
-                providerType = ProviderType.ZHIPU,
                 enabled = true,
             ),
         )

@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,8 +87,10 @@ fun SettingsScreen(
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
 
     // 行顺序：磁盘顺序（保留 XIAOAI 在第一位）
+    // ★ beta6 修复：用 mutableStateListOf 让 add/remove 触发 recomposition。
+    //   旧的 `MutableList` 不是 Compose observable，加行 / 删行 UI 不刷新。
     val rowOrder = remember(config.providers) {
-        config.providers.map { it.key }.toMutableList()
+        mutableStateListOf<String>().apply { addAll(config.providers.map { it.key }) }
     }
 
     // 同步磁盘版本到草稿（外部进程修改后切回来 UI 时也能跟上）
@@ -101,8 +104,12 @@ fun SettingsScreen(
         val diskKeys = config.providers.map { it.key }.toSet()
         val removed = draftProviders.keys.filter { it !in diskKeys }
         removed.forEach { draftProviders.remove(it); expanded.remove(it) }
-        // rowOrder 同步
-        rowOrder.removeAll { it !in diskKeys }
+        // rowOrder 同步（observable list，自动触发 recomposition）
+        val toRemove = rowOrder.filter { it !in diskKeys }
+        toRemove.forEach { rowOrder.remove(it) }
+        config.providers.map { it.key }.forEach { k ->
+            if (k !in rowOrder) rowOrder.add(k)
+        }
     }
 
     Column(
@@ -452,14 +459,29 @@ private fun AddProviderRow(onAdd: () -> Unit) {
 }
 
 // ======================================================================
-// 提供商类型选择
+// 提供商类型选择 —— 点击展开式下拉（v0.1.0-beta6）
 // ======================================================================
 
+/**
+ * 规格（用户原话）：「我要的选择模型是下拉菜单」。
+ *
+ * 设计：Miuix 提供的 `Dropdown` 在 LSPosed 模块的 Compose 子树里依赖 PopupWindow，
+ * 而 Popup 链路会触发宿主 Resources$NotFoundException（见 SettingsWindowController
+ * 关于 ContextWrapper 的修复说明）。所以这里**手写一个轻量下拉**：
+ *  - 第一行：当前选中的类型（ChevronDown 图标 + 描述文字）
+ *  - 点击第一行 → 展开一组 BasicComponent 风格的选项
+ *  - 选中某项 → 自动收起，调用 [onSelect]
+ *
+ * 这样避开了任何 Popup/Dropdown 组件依赖，且视觉上仍然是"下拉菜单"的形态。
+ */
 @Composable
 private fun ProviderTypeSelector(
     current: ProviderType,
     onSelect: (ProviderType) -> Unit,
 ) {
+    var expanded by remember { mutableStateOf(false) }
+    val options = remember { ProviderType.entries.filter { it != ProviderType.XIAOAI } }
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = "提供商类型",
@@ -467,32 +489,70 @@ private fun ProviderTypeSelector(
             color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
             modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
         )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp)),
-        ) {
-            ProviderType.entries.filter { it != ProviderType.XIAOAI }.forEach { type ->
+        Card {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // ---------- 当前选中行（点击展开 / 收起） ----------
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(6.dp))
-                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Switch(
-                        checked = current == type,
-                        onCheckedChange = { if (it) onSelect(type) },
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Column {
-                        Text(text = type.displayName, style = MiuixTheme.textStyles.body1)
-                        if (type.defaultBaseUrl.isNotBlank()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = current.displayName, style = MiuixTheme.textStyles.body1)
+                        if (current.defaultBaseUrl.isNotBlank()) {
                             Text(
-                                text = "${type.defaultBaseUrl} · ${type.defaultModel}",
+                                text = "${current.defaultBaseUrl} · ${current.defaultModel}",
                                 style = MiuixTheme.textStyles.footnote2,
                                 color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
                             )
+                        }
+                    }
+                    IconButton(onClick = { expanded = !expanded }) {
+                        Icon(
+                            imageVector = if (expanded) MiuixIcons.ExpandLess else MiuixIcons.Settings,
+                            contentDescription = if (expanded) "收起" else "展开",
+                        )
+                    }
+                }
+                // ---------- 展开后的选项列表 ----------
+                if (expanded) {
+                    HorizontalDivider()
+                    options.forEachIndexed { i, type ->
+                        if (i > 0) HorizontalDivider()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = type.displayName, style = MiuixTheme.textStyles.body1)
+                                if (type.defaultBaseUrl.isNotBlank()) {
+                                    Text(
+                                        text = "${type.defaultBaseUrl} · ${type.defaultModel}",
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                                    )
+                                }
+                            }
+                            if (type == current) {
+                                Text(
+                                    text = "✓ 当前",
+                                    color = MiuixTheme.colorScheme.primary,
+                                    style = MiuixTheme.textStyles.footnote1,
+                                )
+                            } else {
+                                TextButton(
+                                    text = "选择",
+                                    onClick = {
+                                        onSelect(type)
+                                        expanded = false
+                                    },
+                                )
+                            }
                         }
                     }
                 }
