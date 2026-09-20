@@ -36,7 +36,18 @@ jobs:
           sudo chmod -R 755 $ANDROID_HOME
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" 2>&1 | tail -5
+          # 基础组件（这些一定存在）
+          sdkmanager "platform-tools" "build-tools;36.0.0" 2>&1 | tail -3
+          # Android 37 是「次版本」SDK，包名可能带 .0 也可能不带，两种都试。
+          # 拿不到就退到 android-36 —— AGP 允许 compileSdk 高于已装 SDK 时自动降级。
+          sdkmanager "platforms;android-37.0" 2>&1 | tail -3 \
+            || sdkmanager "platforms;android-37" 2>&1 | tail -3 \
+            || sdkmanager "platforms;android-36" 2>&1 | tail -3 \
+            || true
+          echo "===== 已安装 platform ====="
+          ls -1 "$ANDROID_HOME/platforms" || true
+          echo "===== 已安装 build-tools ====="
+          ls -1 "$ANDROID_HOME/build-tools" || true
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
@@ -50,12 +61,26 @@ jobs:
       - name: 安装 Gradle 9.3.1（AGP 9.1.0 要求）
         if: steps.gradle_cache.outputs.cache-hit != 'true'
         run: |
+          set -e
           sudo curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
-          sudo mkdir -p /opt && sudo unzip -q /tmp/gradle.zip -d /opt
+          # 解压前先清掉可能存在的旧目录（unzip 出来的就是 /opt/gradle-9.3.1）
           sudo rm -rf /opt/gradle-9.3.1
-          sudo mv /opt/gradle-9.3.1 /opt/gradle-9.3.1-tmp 2>/dev/null || true
-          sudo mv /opt/gradle-9.3.1-tmp /opt/gradle-9.3.1 2>/dev/null || true
-          /opt/gradle-9.3.1/bin/gradle --version | head -3
+          sudo mkdir -p /opt
+          sudo unzip -q -o /tmp/gradle.zip -d /opt
+          sudo chmod -R 755 /opt/gradle-9.3.1
+          /opt/gradle-9.3.1/bin/gradle --version | head -5
+
+      - name: 校验 Gradle 可用（缓存可能不完整）
+        run: |
+          if [ ! -x /opt/gradle-9.3.1/bin/gradle ]; then
+            echo "缓存里的 Gradle 不可用，重新下载安装…"
+            sudo curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+            sudo rm -rf /opt/gradle-9.3.1
+            sudo mkdir -p /opt
+            sudo unzip -q -o /tmp/gradle.zip -d /opt
+            sudo chmod -R 755 /opt/gradle-9.3.1
+          fi
+          /opt/gradle-9.3.1/bin/gradle --version | head -5
 
       - name: 创建 local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
@@ -67,11 +92,14 @@ jobs:
 
       - name: 构建 Release APK
         run: |
+          set -o pipefail
           chmod +x gradlew 2>/dev/null || true
-          /opt/gradle-9.3.1/bin/gradle :app:assembleRelease --no-daemon
+          /opt/gradle-9.3.1/bin/gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tail -120
 
       - name: 构建 Debug APK
-        run: /opt/gradle-9.3.1/bin/gradle :app:assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          /opt/gradle-9.3.1/bin/gradle :app:assembleDebug --no-daemon --stacktrace 2>&1 | tail -60
 
       - name: 整理产物
         run: |
@@ -104,7 +132,7 @@ jobs:
             echo "创建 Release $TAG"
             gh release create "$TAG" \
               -R "$GITHUB_REPOSITORY" \
-              --title "XiaoAi Hijack $TAG" \
+              --title "小米运动健康·手环小爱增强 $TAG" \
               --generate-notes \
               out/*
           fi
