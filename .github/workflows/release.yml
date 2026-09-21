@@ -36,7 +36,8 @@ jobs:
           curl -sSL -o clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           sudo unzip -q clt.zip -d $ANDROID_HOME/cmdline-tools
           sudo mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          sudo chmod -R 755 $ANDROID_HOME
+          # 切到 runner 用户可写（不要 sudo chmod 755，那会让 runner 无法写入）
+          sudo chown -R $(id -u):$(id -g) $ANDROID_HOME
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           # 基础组件（这些一定存在）
@@ -57,17 +58,55 @@ jobs:
       - name: 配置原生工具链（NDK + CMake + Ninja）
         run: |
           set -e
+          set -x  # 输出每条命令，便于 CI 日志调试
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-          # NDK 27.0.12077973（arm64 内联 hook 交叉编译用）
-          yes | sudo sdkmanager --licenses > /dev/null 2>&1 || true
-          sudo sdkmanager "ndk;27.0.12077973" 2>&1 | tail -5
-          # CMake 3.28.3（GitHub Actions 自带的可能不对版本，下载官方二进制）
-          curl -sSL -o /tmp/cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz"
-          tar -xzf /tmp/cmake.tar.gz -C /tmp
-          echo "/tmp/cmake-3.28.3-linux-x86_64/bin" >> $GITHUB_PATH
+
+          # ── NDK ──────────────────────────────────────────────────────────
+          # sdkmanager 需要 Java；actions/setup-java 已设置 JAVA_HOME，
+          # 但 sudo 可能把它吞掉，显式传递。
+          # 先试 sdkmanager，失败再走 Google 官方 zip 直链。
+          echo "── 安装 NDK 27.0.12077973 ──"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          if ! sdkmanager "ndk;27.0.12077973" 2>&1 | tail -10; then
+            echo "⚠ sdkmanager NDK 失败，改下载官方 zip..."
+            # NDK 27.0.12077973 = android-ndk-r27c
+            curl -sSL -o /tmp/ndk.zip "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip"
+            mkdir -p "$ANDROID_HOME/ndk"
+            unzip -q -o /tmp/ndk.zip -d "$ANDROID_HOME/ndk"
+            mv "$ANDROID_HOME/ndk"/android-ndk-* "$ANDROID_HOME/ndk/27.0.12077973"
+          fi
+          echo "── NDK 目录 ──"
+          ls -1 "$ANDROID_HOME/ndk/" || true
+
+          # ── CMake ──────────────────────────────────────────────────────────
+          # GitHub Actions runners 有时访问 GitHub releases 不稳定，
+          # 优先用 apt 装 cmake（版本够用），否则下载官方二进制。
+          echo "── 安装 CMake ──"
+          if ! sudo apt-get update -qq 2>/dev/null; then
+            echo "⚠ apt-get update 失败，改用直链 CMake"
+          fi
+          if cmake --version 2>/dev/null | grep -q "3\.2[2-9]"; then
+            echo "✅ CMake 已满足要求"
+          elif sudo apt-get install -y -qq cmake 2>/dev/null && cmake --version 2>/dev/null | grep -q "3\.2[2-9]"; then
+            echo "✅ 通过 apt 安装 CMake"
+          else
+            echo "⚠ apt CMake 版本不对，下载官方 3.28.3..."
+            curl -sSL -o /tmp/cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz" \
+              || curl -sSL -o /tmp/cmake.tar.gz "https://mirrors.aliyun.com/cmake/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz"
+            tar -xzf /tmp/cmake.tar.gz -C /tmp
+            echo "/tmp/cmake-3.28.3-linux-x86_64/bin" >> "$GITHUB_PATH"
+          fi
           cmake --version | head -1
-          # Ninja（CMake generator）
-          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build 2>/dev/null || true
+
+          # ── Ninja ───────────────────────────────────────────────────────────
+          echo "── 安装 Ninja ──"
+          if ! ninja --version 2>/dev/null; then
+            if ! sudo apt-get install -y -qq ninja-build 2>/dev/null; then
+              curl -sSL -o /tmp/ninja.zip "https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip"
+              unzip -o /tmp/ninja.zip -d /tmp/ninja-bin
+              echo "/tmp/ninja-bin" >> "$GITHUB_PATH"
+            fi
+          fi
           ninja --version
 
       - name: 缓存 Gradle 安装包
