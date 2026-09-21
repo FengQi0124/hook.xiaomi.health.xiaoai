@@ -29,8 +29,8 @@ android {
         // 注意：打 tag 发布时，CI 以 git tag 为准（见 .github/workflows/release.yml
         // 的「确定版本号」步骤），这里的值只是本地构建 / 非 tag 构建的默认值。
         // 两者请保持同步，避免本地 APK 和线上 APK 版本号对不上。
-        versionCode = 14
-        versionName = "0.1.0-beta14"
+        versionCode = 15
+        versionName = "0.1.0-beta15"
 
         // 仅构建 LSPosed 目标架构
         ndk {
