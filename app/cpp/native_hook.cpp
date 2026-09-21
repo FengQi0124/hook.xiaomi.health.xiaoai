@@ -153,6 +153,23 @@ static int install_hook(HookContext *ctx) {
     return 0;
 }
 
+static int remove_hook(HookContext *ctx) {
+    if (!ctx->target_fn) return -1;
+    // 用首字节作为"已安装"标志：ARM64 函数绝不可能首字节为 0
+    if (ctx->origin_bytes[0] == 0) return -1;
+    if (set_page_prot(ctx->target_fn, 16, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) return -2;
+    memcpy(ctx->target_fn, ctx->origin_bytes, 16);
+    __builtin___clear_cache((char *)ctx->target_fn, (char *)ctx->target_fn + 16);
+    set_page_prot(ctx->target_fn, 16, PROT_READ | PROT_EXEC);
+    // 跳板页暂不 munmap —— 如果网络线程此时正通过 trampoline 调用原始 SSL_read，
+    // munmap 会触发 sigsegv。trampoline 最多 8KB，进程退出时内核自动回收。
+    ctx->target_fn = NULL;
+    ctx->hook_fn = NULL;
+    ctx->origin_bytes[0] = 0;   // 标记为已摘除
+    LOGI("hook 已摘除（跳板页保留，进程退出时回收）");
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket 帧解析
 // ---------------------------------------------------------------------------
@@ -292,12 +309,16 @@ static JNIEnv *attach_thread() {
 
 static void cb_notify_asr(const char *dialog_id, const char *text) {
     JNIEnv *env = attach_thread();
-    if (!env) return;
+    if (!env || !g_bridge) return;
     jstring jid = env->NewStringUTF(dialog_id);
     jstring jtxt = env->NewStringUTF(text);
     env->CallVoidMethod(g_bridge, g_mid_on_asr, jid, jtxt);
-    env->DeleteLocalRef(jid);
-    env->DeleteLocalRef(jtxt);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("onAsrRecognized 抛出异常，已吞掉");
+    }
+    if (jid) env->DeleteLocalRef(jid);
+    if (jtxt) env->DeleteLocalRef(jtxt);
 }
 
 // 询问 Java 侧是否要替换下行消息
@@ -305,17 +326,27 @@ static void cb_notify_asr(const char *dialog_id, const char *text) {
 static int cb_query_replace(const char *dialog_id, const char *ns,
                             const char *name, char *out, int cap) {
     JNIEnv *env = attach_thread();
-    if (!env) return 0;
+    if (!env || !g_bridge) return 0;
     jstring jid = env->NewStringUTF(dialog_id);
     jstring jns = env->NewStringUTF(ns);
     jstring jname = env->NewStringUTF(name);
     jstring jret = (jstring)env->CallObjectMethod(
         g_bridge, g_mid_on_query_replace, jid, jns, jname);
-    env->DeleteLocalRef(jid);
-    env->DeleteLocalRef(jns);
-    env->DeleteLocalRef(jname);
+    if (jid) env->DeleteLocalRef(jid);
+    if (jns) env->DeleteLocalRef(jns);
+    if (jname) env->DeleteLocalRef(jname);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("onQueryReplace 抛出异常，放行原始回答");
+        if (jret) env->DeleteLocalRef(jret);
+        return 0;
+    }
     if (jret == NULL) return 0;
     const char *s = env->GetStringUTFChars(jret, NULL);
+    if (!s) {
+        env->DeleteLocalRef(jret);
+        return 0;
+    }
     int slen = (int)strlen(s);
     int n = std::min(cap - 1, slen);
     memcpy(out, s, n);
@@ -393,21 +424,31 @@ static int process_aivs_json(uint8_t *json, int len) {
 // ---------------------------------------------------------------------------
 typedef int (*ssl_read_fn)(void *ssl, void *buf, int num);
 static ssl_read_fn g_real_ssl_read = NULL;
+static HookContext g_hook_ctx;   // 全局，保证 nativeStop 能恢复原始字节
+static std::mutex g_hook_mutex;  // 保护 SSL_read hook 安装/卸载/调用路径
 
 static int hook_ssl_read(void *ssl, void *buf, int num) {
-    if (!g_real_ssl_read || num <= 0) return g_real_ssl_read(ssl, buf, num);
-    int n = g_real_ssl_read(ssl, buf, num);
+    // g_real_ssl_read 在 nativeStop 后会被清零；如果 hook 已摘除直接透传，不能 deref NULL
+    ssl_read_fn real = g_real_ssl_read;
+    if (!real) {
+        // hook 被卸载但 trampoline 还在 —— 通过跳板走原始字节
+        // 理论上不应发生（remove_hook 先恢复字节再清 real），作为 fallback
+        return -1;
+    }
+    if (num <= 0) return real(ssl, buf, num);
+    int n = real(ssl, buf, num);
     if (n <= 0) return n;
 
     uint8_t *p = (uint8_t *)buf;
 
-    if (p[0] == 0x81 || p[0] == 0x80 || p[0] == 0x82 ||
-        p[0] == 0x01) {
+    // 先尝试 WebSocket 帧解析（服务器下行 JSON 走 text frame opcode=0x1）
+    if (p[0] == 0x81 || p[0] == 0x80 || p[0] == 0x82 || p[0] == 0x01) {
         WsFrame fr;
         if (parse_ws_frame(p, n, &fr) == 0 && fr.opcode == 0x1) {
             process_aivs_json((uint8_t *)fr.data, fr.len);
         }
-    } else if (p[0] == '{') {
+    } else if (p[0] == '{' && p[n - 1] == '}') {
+        // raw JSON fallback：只在首尾字符都匹配时处理，降低残缺 JSON 误命中概率
         process_aivs_json(p, n);
     }
     return n;
@@ -438,6 +479,7 @@ static void *resolve_ssl_read() {
 // ---------------------------------------------------------------------------
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_zeroone01_xiaoai_core_NativeHook_nativeStart(JNIEnv *env, jobject thiz) {
+    std::lock_guard<std::mutex> lk(g_hook_mutex);
     if (g_real_ssl_read) return JNI_TRUE;
 
     env->GetJavaVM(&g_jvm);
@@ -459,11 +501,10 @@ Java_com_zeroone01_xiaoai_core_NativeHook_nativeStart(JNIEnv *env, jobject thiz)
     if (!addr) return JNI_FALSE;
     g_real_ssl_read = (ssl_read_fn)addr;
 
-    HookContext ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.target_fn = addr;
-    ctx.hook_fn = (void *)hook_ssl_read;
-    int rc = install_hook(&ctx);
+    memset(&g_hook_ctx, 0, sizeof(g_hook_ctx));
+    g_hook_ctx.target_fn = addr;
+    g_hook_ctx.hook_fn = (void *)hook_ssl_read;
+    int rc = install_hook(&g_hook_ctx);
     if (rc != 0) { LOGE("install_hook 失败 rc=%d", rc); return JNI_FALSE; }
     LOGI("SSL_read native hook 已启动");
     return JNI_TRUE;
@@ -471,8 +512,13 @@ Java_com_zeroone01_xiaoai_core_NativeHook_nativeStart(JNIEnv *env, jobject thiz)
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_zeroone01_xiaoai_core_NativeHook_nativeStop(JNIEnv *env, jobject thiz) {
+    std::lock_guard<std::mutex> lk(g_hook_mutex);
+    // 先恢复原始字节，再清 g_real_ssl_read，避免 trampoline 跳到已卸载的 hook 函数
+    remove_hook(&g_hook_ctx);
     g_real_ssl_read = NULL;
     if (g_bridge) { env->DeleteGlobalRef(g_bridge); g_bridge = NULL; }
+    g_mid_on_asr = NULL;
+    g_mid_on_query_replace = NULL;
     LOGI("SSL_read native hook 已停止");
 }
 
