@@ -1,9 +1,13 @@
 package com.zeroone01.xiaoai.net
 
+import com.zeroone01.xiaoai.core.AiConfig
+import com.zeroone01.xiaoai.core.ChatMessage
 import com.zeroone01.xiaoai.core.ChatRequest
 import com.zeroone01.xiaoai.core.ChatResult
+import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.XLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
@@ -146,6 +150,46 @@ object AiClient {
             XLog.e("AI 请求异常: $reason", t)
             ChatResult.Failure(reason)
         }
+    }
+
+    // ------------------------------------------------------------------ 同步路径（native 回调线程）
+
+    /**
+     * **同步**版本，供 native 回调线程（Libssl.SSL_read 工作线程）调用。
+     *
+     * 在住客端的网络线程里做同步 HTTP，看起来是「阻塞住客端网络线程」，
+     * 但该线程本身就在等 AI 云端回复（下行 Toast 就是云端话音回答），
+     * 所以阻塞它的同时也在等同一份数据 —— 不会额外增加用户体感延迟。
+     *
+     * @return 模型回复的纯文本；配置不完整 / 超时 / 网络失败时返回 null，由调用方决定放行原始回答
+     */
+    fun fetchReply(question: String): String? = runBlocking {
+        val cfg = ModelManager.config()
+        if (cfg.isXiaoAiActive) return@runBlocking null  // 走小爱原生，不替换
+        val history = if (cfg.enableHistory) buildHistory(cfg.historyRounds) else emptyList()
+        val req = cfg.toChatRequest(history) ?: return@runBlocking null
+        when (val r = chat(req, question)) {
+            is ChatResult.Success -> r.text
+            is ChatResult.Failure -> null
+        }
+    }
+
+    /** 构造 [ChatRequest]，配置不完整时返回 null */
+    private fun chatRequestFor(cfg: AiConfig, forModelKey: String?): ChatRequest? {
+        if (cfg.isXiaoAiActive && forModelKey == null) return null  // 走小爱原生，不替换
+        val history = if (cfg.enableHistory) buildHistory(cfg.historyRounds) else emptyList()
+        return cfg.toChatRequest(history)
+    }
+
+    private fun buildHistory(rounds: Int): List<ChatMessage> {
+        val all = ModelManager.dialogs()
+        val msgs = mutableListOf<ChatMessage>()
+        for (d in all.reversed()) {
+            if (msgs.size >= rounds * 2) break
+            msgs.add(0, ChatMessage(role = "assistant", content = d.answer))
+            msgs.add(0, ChatMessage(role = "user", content = d.question))
+        }
+        return msgs
     }
 
     // ------------------------------------------------------------------ 解析

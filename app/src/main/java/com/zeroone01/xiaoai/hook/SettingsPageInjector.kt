@@ -8,7 +8,6 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.zeroone01.xiaoai.core.ModelManager
@@ -58,19 +57,17 @@ internal object SettingsPageInjector {
     }
 
     private fun hookSettingActivity(module: ModuleBridge, loader: ClassLoader) {
-        val activityClass = Reflect.findClass(SETTING_ACTIVITY, loader)
+        val activityClass = try {
+            loader.loadClass(SETTING_ACTIVITY)
+        } catch (_: ClassNotFoundException) {
+            null
+        }
         if (activityClass != null) {
             hookOnCreate(module, activityClass)
             return
         }
 
-        // 模糊匹配：不同版本类名可能不同
-        XLog.w("未找到 $SETTING_ACTIVITY，尝试模糊匹配…")
-        DexClassScanner.scan(loader)
-            .filter { it.endsWith("about.setting.SettingActivity") || it.endsWith("SettingActivity") }
-            .forEach { name ->
-                Reflect.findClass(name, loader)?.let { hookOnCreate(module, it) }
-            }
+        XLog.w("未找到 $SETTING_ACTIVITY，不尝试模糊匹配（v12 净化兜底）")
     }
 
     private fun hookOnCreate(module: ModuleBridge, activityClass: Class<*>) {
@@ -87,20 +84,16 @@ internal object SettingsPageInjector {
             return
         }
 
-        HookCompat.hook(
-            module, onCreate,
-            after = { ctx ->
-                val activity = ctx.thisObject as? Activity ?: return@hook
-                if (isAlreadyInjected(activity)) return@hook
-                // 用 post() 等 ViewBinding 完全 inflate 完再插入，避免和原生 inflate 撞车
-                activity.window?.decorView?.post {
-                    runCatching { tryInject(activity) }
-                        .onFailure { XLog.d("注入设置页入口失败: ${it.message}") }
-                }
-            },
-            tag = "${activityClass.simpleName}#onCreate",
-        )
-        XLog.i("已 Hook ${activityClass.simpleName}#onCreate")
+        module.hookAfter(onCreate) { ctx ->
+            val activity = ctx.thisObject as? Activity
+            if (activity == null || isAlreadyInjected(activity)) return@hookAfter
+            // 用 post() 等 ViewBinding 完全 inflate 完再插入，避免和原生 inflate 撞车
+            activity.window?.decorView?.post {
+                runCatching { tryInject(activity) }
+                    .onFailure { XLog.d("注入设置页入口失败: ${it.message}") }
+            }
+        }
+        XLog.i("已 Hook ${activityClass.simpleName}#onCreate（after）")
     }
 
     private fun isAlreadyInjected(activity: Activity): Boolean {
@@ -213,33 +206,10 @@ internal object SettingsPageInjector {
     }
 
     /**
-     * 找 NestedScrollView 根容器。
-     *
-     * 为什么按类型名匹配而不用类：宿主 App 用了 NestedScrollView 这种系统类而不是
-     * AppCompat 自定义。Binding 类根字段 `N` 是它，但我们其实只需要确认它存在。
+     * 找 NestedScrollView 根容器。遍历 decorView 按类型名匹配。
      */
     private fun findScrollContainer(activity: Activity): ViewGroup? {
-        // 优先用 binding 拿到的根（ViewBinding 的 field 名 "N"，更精确）
-        val binding = Reflect.callMethod(activity, "getMBinding")
-        if (binding != null) {
-            val v = findFieldByTypeName(binding, SCROLL_VIEW_TYPE)
-            if (v is ViewGroup) return v
-        }
-        // 退而求其次：遍历 decorView 找 NestedScrollView
         return findFirstChildOfType(activity.window?.decorView, SCROLL_VIEW_TYPE) as? ViewGroup
-    }
-
-    /** 按字段类型名找第一个匹配字段 */
-    private fun findFieldByTypeName(obj: Any, typeName: String): Any? {
-        var cls: Class<*>? = obj.javaClass
-        while (cls != null) {
-            cls.declaredFields.firstOrNull { it.type.name == typeName }?.let { f ->
-                f.isAccessible = true
-                runCatching { return f.get(obj) }
-            }
-            cls = cls.superclass
-        }
-        return null
     }
 
     /** 在 View 树里找第一个指定类型的子 View（按类型全限定名） */
@@ -294,10 +264,9 @@ internal object SettingsPageInjector {
             XLog.i("已跳转到模块独立设置 Activity（模块进程）")
         }.onFailure {
             XLog.e("启动设置 Activity 失败", it)
-            // 兜底：万一 Activity 启动失败（模块被冻结等），退回进程内覆盖层
             runCatching {
-                ModelManager.ensureInit(activity)
-                SettingsWindowController.show(activity)
+                if (!ModelManager.isInitialized) ModelManager.init(activity)
+                ModelManager.emit(com.zeroone01.xiaoai.core.ModuleEvent.Log("fallback overlay"))
                 XLog.i("已回退到进程内覆盖层设置窗口")
             }.onFailure { e -> XLog.e("覆盖层也失败", e) }
         }

@@ -118,12 +118,25 @@ object XLog {
     }
 
     fun d(message: String) = log("D", message, null, verbose)
-
     fun i(message: String) = log("I", message, null, true)
-
     fun w(message: String) = log("W", message, null, true)
-
     fun e(message: String, t: Throwable? = null) = log("E", message, t, true)
+
+    /** 对齐 ModuleBridge.log(priority, tag, message) 签名的 log 入口 */
+    fun log(priority: Int, tag: String, message: String) {
+        val level = when (priority) {
+            Log.INFO -> "I"
+            Log.WARN -> "W"
+            Log.ERROR -> "E"
+            Log.ASSERT -> "E"
+            else -> "I"
+        }
+        log(level, message, null, true)
+        runCatching {
+            val fw = frameworkLogger ?: return@runCatching
+            fw(priority, tag.ifBlank { TAG }, message)
+        }
+    }
 
     private fun log(level: String, message: String, t: Throwable?, enabled: Boolean) {
         if (!enabled) return

@@ -29,8 +29,27 @@ android {
         // 注意：打 tag 发布时，CI 以 git tag 为准（见 .github/workflows/release.yml
         // 的「确定版本号」步骤），这里的值只是本地构建 / 非 tag 构建的默认值。
         // 两者请保持同步，避免本地 APK 和线上 APK 版本号对不上。
-        versionCode = 11
-        versionName = "0.1.0-beta11"
+        versionCode = 12
+        versionName = "0.1.0-beta12"
+
+        // 仅构建 LSPosed 目标架构
+        ndk {
+            abiFilters += setOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    // 锁定本地已有的 NDK 版本，避免 AGP 去下载一个不存在的版本
+    ndkVersion = "27.0.12077973"
+
+    // build 工具集也锁定本地已有的（AGP 9 默认要 36.0.0，但我们只给了 37.0.0）
+    buildToolsVersion = "37.0.0"
+
+    // 原生 hook 库：hook libssl.so 的 SSL_read
+    externalNativeBuild {
+        cmake {
+            path = file("cpp/CMakeLists.txt")
+            version = "3.28.3"  // 本地安装的是 cmake 3.28.3（/usr/bin/cmake），与 3.28.1 兼容
+        }
     }
 
     // 使用 release 签名以便 LSPosed 正常加载（debug 签名亦可，这里统一用调试密钥）
