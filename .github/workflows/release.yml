@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -50,6 +53,22 @@ jobs:
           ls -1 "$ANDROID_HOME/build-tools" || true
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+
+      - name: 配置原生工具链（NDK + CMake + Ninja）
+        run: |
+          set -e
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          # NDK 27.0.12077973（arm64 内联 hook 交叉编译用）
+          yes | sudo sdkmanager --licenses > /dev/null 2>&1 || true
+          sudo sdkmanager "ndk;27.0.12077973" 2>&1 | tail -5
+          # CMake 3.28.3（GitHub Actions 自带的可能不对版本，下载官方二进制）
+          curl -sSL -o /tmp/cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz"
+          tar -xzf /tmp/cmake.tar.gz -C /tmp
+          echo "/tmp/cmake-3.28.3-linux-x86_64/bin" >> $GITHUB_PATH
+          cmake --version | head -1
+          # Ninja（CMake generator）
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build 2>/dev/null || true
+          ninja --version
 
       - name: 缓存 Gradle 安装包
         id: gradle_cache
