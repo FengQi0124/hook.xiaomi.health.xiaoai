@@ -55,6 +55,25 @@ object XLog {
     @Volatile
     private var logFile: File? = null
 
+    /** 当前进程的 ApplicationContext（init 时保存） */
+    @Volatile
+    private var appContext: Context? = null
+
+    /**
+     * 当前是否为模块进程（com.zeroone01.xiaoai）。
+     * false = hook 进程（宿主 com.mi.health）：日志除写本地文件外，
+     * 还要经 [LogProvider] 批量推送到模块进程，诊断页才能看到。
+     */
+    @Volatile
+    private var isModuleProcess: Boolean = true
+
+    /** hook 进程 → 模块进程 的日志行缓冲（批量推送，避免每行一次 IPC） */
+    private val remoteBuffer = ArrayList<String>()
+    private val remoteLock = Any()
+
+    @Volatile
+    private var lastRemoteFlush = 0L
+
     /**
      * LSPosed 框架日志回调，签名兼容 `XposedModule.log(priority, tag, msg)`。
      *
@@ -78,6 +97,11 @@ object XLog {
      */
     fun init(context: Context) {
         try {
+            appContext = context.applicationContext ?: context
+            isModuleProcess = appContext?.packageName == "com.zeroone01.xiaoai"
+            // 模块进程：createPackageContext 同包必成功，写模块目录；
+            // hook 进程：Android 11+ 包可见性下失败 → fallback 宿主目录（备份），
+            //           同时靠 LogProvider 推送（见 queueRemote）。
             val moduleCtx = try {
                 context.createPackageContext(
                     "com.zeroone01.xiaoai",
@@ -87,7 +111,7 @@ object XLog {
             val dir = moduleCtx.filesDir
             if (!dir.exists()) dir.mkdirs()
             logFile = File(dir, LOG_FILE_NAME)
-            Log.i(TAG, "日志文件已就绪：${logFile?.absolutePath}")
+            Log.i(TAG, "日志文件已就绪：${logFile?.absolutePath}（模块进程=$isModuleProcess）")
         } catch (t: Throwable) {
             Log.w(TAG, "初始化日志文件失败", t)
         }
@@ -134,7 +158,8 @@ object XLog {
             buffer.add(LogEntry(timeShort, level, text))
             while (buffer.size > MAX_BUFFER) buffer.removeAt(0)
         }
-        // 3) 文件（跨进程共享）
+        // 3) 文件 + 跨进程推送
+        val line = "$timeLong [$level] $text\n"
         runCatching {
             val file = logFile ?: return@runCatching
             if (file.length() > LOG_FILE_MAX_BYTES) {
@@ -144,8 +169,44 @@ object XLog {
                 file.writeText("")
                 keep.forEach { file.appendText("$it\n") }
             }
-            file.appendText("$timeLong [$level] $text\n")
+            file.appendText(line)
         }
+        // hook 进程：把日志行批量推给模块进程（诊断页读的是模块目录的文件）
+        if (!isModuleProcess) {
+            queueRemote(line)
+        }
+    }
+
+    /**
+     * hook 进程 → 模块进程 的日志推送。
+     *
+     * 每攒够 20 行或距上次推送超过 2s 就 flush 一次，用独立线程做
+     * `ContentResolver.call`（可能拉起模块进程，耗时不可控），
+     * 绝不阻塞 hook 回调线程。
+     */
+    private fun queueRemote(line: String) {
+        val ctx = appContext ?: return
+        var toSend: String? = null
+        synchronized(remoteLock) {
+            remoteBuffer.add(line)
+            val now = System.currentTimeMillis()
+            if (remoteBuffer.size >= 20 || now - lastRemoteFlush > 2000) {
+                toSend = remoteBuffer.joinToString("")
+                remoteBuffer.clear()
+                lastRemoteFlush = now
+            }
+        }
+        val payload = toSend ?: return
+        Thread {
+            runCatching {
+                ctx.contentResolver.call(
+                    LogProvider.AUTHORITY,
+                    LogProvider.METHOD_APPEND,
+                    payload,
+                    null,
+                )
+            }
+        }.start()
     }
 
     /**

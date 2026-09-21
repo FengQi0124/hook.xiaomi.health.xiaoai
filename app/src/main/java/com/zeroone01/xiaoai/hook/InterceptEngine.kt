@@ -101,6 +101,24 @@ internal class InterceptEngine {
         }
 
         val dialogId = model.dialogIdOf(message).orEmpty()
+        return routeRecognizeText(dialogId, text)
+    }
+
+    /**
+     * JSON 层的 RecognizeResult 入口（org.json / Gson 文本路径，见 XiaoAiHookEntry.handleWireJson）。
+     *
+     * 与 [onRecognizeResult] 等价，但输入已经是解析好的纯文本，
+     * 不需要再从 Message 对象反射提取。
+     *
+     * @return 需要「覆盖回答文本」时返回非 null 文本，否则返回 null 表示放行
+     */
+    fun onRecognizeJson(dialogId: String, text: String): String? =
+        routeRecognizeText(dialogId, text)
+
+    /**
+     * 识别文本的统一路由（Message 路径与 JSON 路径共用）。
+     */
+    private fun routeRecognizeText(dialogId: String, text: String): String? {
         XLog.i("识别到用户语音 [dialog=$dialogId]: $text")
 
         ModelManager.purgeStalePending()
@@ -224,6 +242,17 @@ internal class InterceptEngine {
         val fieldName = payloadTextField(null, payload)
         return onAnswerPayload("", payload, fieldName, rewrite)
     }
+
+    /**
+     * JSON 层的回答消息入口（org.json / Gson 文本路径）。
+     *
+     * payload 传 null：onAnswerPayload 内部只在「读原文做日志」时用 payload，
+     * 空安全（Reflector.getString(null, ...) 返回 null）。
+     *
+     * @param rewrite 由 Hook 层提供：把新文本写回 JSONObject 的回调
+     */
+    fun onAnswerJson(dialogId: String, rewrite: (String) -> Boolean): Boolean =
+        onAnswerPayload(dialogId, null, "text", rewrite)
 
     /**
      * 回答替换的核心实现（[onAnswerMessage] / [onAnswerPayloadOnly] 共用）。

@@ -37,6 +37,19 @@
             android:configChanges="orientation|screenSize|uiMode|keyboardHidden" />
 
         <!--
+            跨进程日志通道：hook 跑在宿主（com.mi.health）进程，诊断页在模块
+            进程。Android 11+ 包可见性下 createPackageContext 拿不到模块
+            filesDir，所以 hook 进程用 ContentResolver.call 把日志行批量推给
+            这个 provider，由它写进模块 filesDir/xiaoai.log。
+            exported=true 且不设 permission：跨 uid 的宿主进程必须能调到。
+            authority 固定（见 LogProvider.AUTHORITY）。
+        -->
+        <provider
+            android:name=".core.LogProvider"
+            android:authorities="com.zeroone01.xiaoai.logprovider"
+            android:exported="true" />
+
+        <!--
             ★ 现代 libxposed API 模块**不需要**任何 Xposed meta-data。
             框架直接从 APK 里读这三个文件：
               META-INF/xposed/module.prop      —— minApiVersion / targetApiVersion / staticScope
