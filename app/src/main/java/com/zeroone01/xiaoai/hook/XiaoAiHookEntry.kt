@@ -360,8 +360,8 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
 
         val ok = HookCompat.hook(this, findClassMethod, after = { ctx ->
             val result = ctx.result
-            val ns = ctx.arg<String>(0) ?: return@hook
-            val name = ctx.arg<String>(1) ?: return@hook
+            val ns = ctx.arg(0) as? String ?: return@hook
+            val name = ctx.arg(1) as? String ?: return@hook
             if (result is Class<*>) {
                 XLog.d("[$TAG] ApiNameMapping: $ns.$name → ${result.name}")
             }
