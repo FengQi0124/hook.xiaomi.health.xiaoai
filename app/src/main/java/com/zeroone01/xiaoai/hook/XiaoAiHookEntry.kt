@@ -12,6 +12,7 @@ import io.github.libxposed.api.XposedModuleInterface
 import java.lang.reflect.Executable
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.util.ArrayList
 import java.util.concurrent.ConcurrentHashMap
 
 /**
