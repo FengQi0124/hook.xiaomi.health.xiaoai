@@ -156,6 +156,38 @@ internal class InterceptEngine {
     }
 
     // ==================================================================
+    // pending query 查找（py 的 pending_queries[dialog_id] 等价实现）
+    // ==================================================================
+
+    /**
+     * 按 dialog_id 精确查找待处理提问；查不到时回退到**最近一条**（60s 内）。
+     *
+     * ★ v0.1.0-beta7：getter 保底 Hook（见 XiaoAiHookEntry.hookPayloadGetters）拿不到
+     * header，因此没有 dialog_id —— 手环同一时间只有一轮语音对话，用"最近一条提问"
+     * 语义与 py 的 pending_queries 完全等价。
+     *
+     * @return 已从队列移除的 pending；没有匹配返回 null
+     */
+    private fun pendingQueriesLookup(dialogId: String): ModelManager.PendingQuery? {
+        // 1) 精确匹配（py 语义）
+        if (dialogId.isNotBlank()) {
+            ModelManager.pendingQueries.remove(dialogId)?.let { return it }
+        }
+        // 2) fallback：最近一条未过期的
+        val entries = ModelManager.pendingQueries.entries.sortedByDescending { it.value.timestamp }
+        val now = System.currentTimeMillis()
+        for ((_, v) in entries) {
+            if (now - v.timestamp <= 60_000L) {
+                // 从任意 key 移除（命中即消费）
+                ModelManager.pendingQueries.entries.removeIf { it.value === v }
+                XLog.d("dialog_id 不匹配，使用最近一条提问 fallback: ${v.text}")
+                return v
+            }
+        }
+        return null
+    }
+
+    // ==================================================================
     // 入口 2：回答消息（统一处理 Template.* / Application.GenerateSpeak）
     // ==================================================================
 
@@ -176,15 +208,42 @@ internal class InterceptEngine {
     fun onAnswerMessage(message: Any?, rewrite: (String) -> Boolean): Boolean {
         val model = AivsModel.get()
         val payload = model.payloadOf(message) ?: return false
-
         val dialogId = model.dialogIdOf(message).orEmpty()
         val fieldName = payloadTextField(message, payload)
+        return onAnswerPayload(dialogId, payload, fieldName, rewrite)
+    }
+
+    /**
+     * payload-only 入口：给 **getter 保底 Hook** 用（见 XiaoAiHookEntry.hookPayloadGetters）。
+     *
+     * getter hook 挂在 `Template$Toast#getText()` 这类 payload 方法上，`this` 就是
+     * payload 本身，拿不到外层 Message / header / dialog_id —— dialogId 传空串，
+     * 由 [pendingQueriesLookup] 的「最近一条提问」fallback 兜住。
+     */
+    fun onAnswerPayloadOnly(payload: Any?, rewrite: (String) -> Boolean): Boolean {
+        val fieldName = payloadTextField(null, payload)
+        return onAnswerPayload("", payload, fieldName, rewrite)
+    }
+
+    /**
+     * 回答替换的核心实现（[onAnswerMessage] / [onAnswerPayloadOnly] 共用）。
+     */
+    private fun onAnswerPayload(
+        dialogId: String,
+        payload: Any?,
+        fieldName: String,
+        rewrite: (String) -> Boolean,
+    ): Boolean {
+        val cfg = ModelManager.config()
+        val active = cfg.activeProvider()
+        val activeDisplay = active.displayName.ifBlank { active.providerType.displayName }
 
         // 情况 A：手环正在选择模式，或刚才的语音指令产生了「待覆盖文本」，
         //        这些场景在 onRecognizeResult 里已经算好文本但无法直接写回 RecognizeResult，
         //        因此在这里统一落地。
-        val direct = pendingDirectText.get()
+        val direct = pendingDirectText
         if (direct != null) {
+            pendingDirectText = null // 读取即消费
             XLog.i("使用指令应答文本覆盖 Toast: ${direct.take(50)}")
             if (rewrite(direct)) {
                 recordDialog(dialogId, "", direct, "语音指令", true, "语音指令")
@@ -194,16 +253,12 @@ internal class InterceptEngine {
         }
 
         // 情况 B：常规 AI 替换
-        val cfg = ModelManager.config()
-        val active = cfg.activeProvider()
-        val activeDisplay = active.displayName.ifBlank { active.providerType.displayName }
-
         if (active.isXiaoAi) {
             XLog.d("当前为小爱同学模式，不劫持 Toast")
             return false
         }
 
-        val pending = ModelManager.pendingQueries.remove(dialogId)
+        val pending = pendingQueriesLookup(dialogId)
         if (pending == null || pending.text.isBlank()) {
             XLog.i("Toast [dialog=$dialogId] 无对应提问文本，放行原始回答")
             return false
@@ -309,15 +364,23 @@ internal class InterceptEngine {
     // 指令应答的临时落地（RecognizeResult 与 Toast 之间的桥）
     // ==================================================================
 
-    private val pendingDirectText = ThreadLocal<String?>()
+    /**
+     * ★ v0.1.0-beta7：从 ThreadLocal 改为全局字段。
+     * 原因：RecognizeResult（ASR 事件分发线程）与 Template.Toast（UI/TTS 线程）
+     * **不在同一个线程**，ThreadLocal 暂存会让「切换模型」的菜单文本永远丢包——
+     * 这正是用户反馈"手环说切换模型没有显示菜单"的另一个根因。
+     * 语音指令场景同一时刻只有一条待落地应答，全局单槽足够；读取即消费。
+     */
+    @Volatile
+    private var pendingDirectText: String? = null
 
     /** 由 Hook 层在 RecognizeResult 被拦截后调用，暂存应答文本 */
     fun stashDirectText(text: String?) {
-        pendingDirectText.set(text)
+        pendingDirectText = text
     }
 
     fun clearDirectText() {
-        pendingDirectText.remove()
+        pendingDirectText = null
     }
 
     // ==================================================================

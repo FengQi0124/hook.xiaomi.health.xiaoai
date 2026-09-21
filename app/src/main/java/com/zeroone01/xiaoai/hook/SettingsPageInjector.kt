@@ -273,14 +273,33 @@ internal object SettingsPageInjector {
     /**
      * 打开模块设置 UI。
      *
-     * v0.1.0-beta5：必须传入 Activity —— 设置窗口现在挂在宿主 Activity 的 content 里
-     * （取代之前的 WindowManager 浮窗方案），不接受 Context/ApplicationContext。
+     * ★ v0.1.0-beta7：改为**独立 Activity**（用户明确要求：嵌入宿主设置页的覆盖层
+     * 有顶栏返回键不走拦截、无转场动画、back 栈混乱等硬伤）。
+     *
+     * 显式 ComponentName 启动不受 Android 11+ 包可见性限制（visibility 只约束
+     * 隐式 intent 解析）；模块 Activity exported=true 放行跨应用启动。
+     * 必须加 FLAG_ACTIVITY_NEW_TASK —— 宿主 Activity 上下文非 task root 时缺这个
+     * flag 会抛 AndroidRuntimeException。
      */
     private fun openSettings(activity: Activity) {
-        ModelManager.ensureInit(activity)
         runCatching {
-            SettingsWindowController.show(activity)
-            XLog.i("已在 com.mi.health 进程内拉起设置窗口 (基于宿主 Activity content)")
-        }.onFailure { XLog.e("SettingsWindowController.show() 失败", it) }
+            val intent = android.content.Intent().apply {
+                setClassName(
+                    "com.zeroone01.xiaoai",
+                    "com.zeroone01.xiaoai.ui.SettingsActivity",
+                )
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            activity.startActivity(intent)
+            XLog.i("已跳转到模块独立设置 Activity（模块进程）")
+        }.onFailure {
+            XLog.e("启动设置 Activity 失败", it)
+            // 兜底：万一 Activity 启动失败（模块被冻结等），退回进程内覆盖层
+            runCatching {
+                ModelManager.ensureInit(activity)
+                SettingsWindowController.show(activity)
+                XLog.i("已回退到进程内覆盖层设置窗口")
+            }.onFailure { e -> XLog.e("覆盖层也失败", e) }
+        }
     }
 }

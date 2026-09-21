@@ -45,6 +45,7 @@ object ModelManager {
     val switching: StateFlow<Boolean> = _switching.asStateFlow()
 
     private lateinit var store: ConfigStore
+    private lateinit var appContext: Context
 
     @Volatile
     private var initialized = false
@@ -53,9 +54,6 @@ object ModelManager {
 
     /** dialog_id -> 待处理的用户语音文本，Hook 线程与网络回调共用 */
     val pendingQueries = ConcurrentHashMap<String, PendingQuery>()
-
-    /** 最近一次对话记录（UI 展示用），最多保留 50 条 */
-    val recentDialogs = java.util.Collections.synchronizedList(ArrayDeque<DialogRecord>())
 
     data class PendingQuery(
         val text: String,
@@ -74,21 +72,30 @@ object ModelManager {
         val note: String = "",
     )
 
+    /** 本进程是否为模块自身进程（SettingsActivity 所在）；false = 宿主 hook 进程 */
+    val isModuleProcess: Boolean
+        get() = runCatching { appContext.packageName == MODULE_PACKAGE }.getOrDefault(false)
+
+    const val MODULE_PACKAGE = "com.zeroone01.xiaoai"
+
     @SuppressLint("HardwareIds")
     @Synchronized
     fun init(context: Context) {
         if (initialized) return
-        // 兼容「在宿主进程里跑」的情况：Hook 后 com.mi.health 进程的 context.filesDir
-        // 是宿主的 dataDir (/data/data/com.mi.health/)，但配置要写到模块自己的 dataDir
-        // (/data/data/com.zeroone01.xiaoai/) 才能跨进程共享。
-        // 用 createPackageContext 跨 uid 拿到模块自己的 Context，再取 filesDir。
-        val moduleCtx = runCatching {
-            context.createPackageContext("com.zeroone01.xiaoai", Context.CONTEXT_IGNORE_SECURITY)
-        }.getOrNull() ?: context
-        val dir = moduleCtx.filesDir
+        // ★ v0.1.0-beta7（独立 Activity 架构）：
+        // 配置文件跟随**当前进程**的 filesDir：
+        //  - 宿主 hook 进程（com.mi.health）：写宿主 filesDir，Hook 直接读；
+        //    模块 UI 保存后通过 [ConfigSync] 广播推送最新 JSON 过来（见下）。
+        //  - 模块进程（SettingsActivity）：写模块 filesDir；保存时同时广播推给宿主。
+        // 之前尝试 createPackageContext("com.zeroone01.xiaoai") 跨 uid 读模块目录，
+        // Android 11+ 包可见性下必失败（beta5 日志 "Application package not found"），
+        // 反而把配置悄悄写到宿主目录 —— 现在显式承认这个行为并按进程分流。
+        val appCtx = context.applicationContext ?: context
+        appContext = appCtx
+        val dir = appCtx.filesDir
         store = FileConfigStore(File(dir, "xiaoai_config.json"))
-        // 先初始化日志路径（XLog.init 内部也会 createPackageContext）
-        XLog.init(context)
+        // 先初始化日志路径（XLog.init 内部也会按进程决定写哪里）
+        XLog.init(appCtx)
         val cfg = store.get()
         _configFlow.value = cfg
         val active = cfg.activeProvider()
@@ -96,8 +103,18 @@ object ModelManager {
         else active.providerType.toModelId()
         XLog.verbose = cfg.verboseLog
         initialized = true
-        XLog.i("ModelManager 初始化完成，dataDir=${dir.absolutePath} active=${active.displayName}")
+        XLog.i(
+            "ModelManager 初始化完成：pkg=${appCtx.packageName} dataDir=${dir.absolutePath} " +
+                "active=${active.displayName}"
+        )
+        // 宿主端：注册广播接收，随时准备接收模块 UI 推送的配置
+        if (!isModuleProcess) {
+            ConfigSync.registerHostReceiver(appCtx)
+        }
     }
+
+    /** 最近一次对话记录（UI 展示用），最多保留 50 条 */
+    val recentDialogs = java.util.Collections.synchronizedList(ArrayDeque<DialogRecord>())
 
     /** 确保已初始化（Hook 侧拿到的 Context 可能是 App 的，也可能是模块的） */
     fun ensureInit(context: Context) {
@@ -125,7 +142,11 @@ object ModelManager {
         return changed
     }
 
-    /** 保存配置（仅 UI 进程调用） */
+    /** 保存配置。
+     *
+     * ★ v0.1.0-beta7：模块进程（SettingsActivity）保存后，**立即广播推送给宿主**，
+     * 宿主 hook 进程的 ConfigSync receiver 落盘 + 热加载，语音拦截下一句就生效。
+     */
     fun saveConfig(cfg: AiConfig) {
         if (!initialized) return
         store.set(cfg)
@@ -135,6 +156,10 @@ object ModelManager {
         _activeModel.value = if (active.isXiaoAi) ModelId.XIAOAI
         else active.providerType.toModelId()
         XLog.verbose = cfg.verboseLog
+        // 模块端：推送最新配置给宿主进程
+        if (isModuleProcess) {
+            ConfigSync.sendConfigToHost(appContext, FileConfigStore.toJson(cfg))
+        }
     }
 
     /** 更新单个 provider；返回新的 AiConfig */

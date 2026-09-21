@@ -6,12 +6,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
-        v1.2.0：模块 APK 不再声明任何 Activity。
-        所有设置 UI 通过 WindowManager + ComposeView 直接渲染在宿主 com.mi.health 进程里。
-        - 不需要桌面图标；
-        - 不需要独立的进程；
-        - 不需要 SYSTEM_ALERT_WINDOW 权限。
-        这样用户杀后台 = 杀掉小米运动健康 = 本来就在用，模块与宿主同生共死。
+        v0.1.0-beta7：设置 UI 改为【独立 Activity】。
+        之前的覆盖层方案（ComposeView 塞进宿主 Activity content）有硬伤：
+          - 宿主设置页顶栏返回键走宿主自己的 popBackStack，不经过我们的 back 拦截；
+          - 没有转场动画；
+          - back 栈与宿主 Activity 混在一起，行为不符合直觉。
+        独立 Activity 的 back / 转场 / 主题全部由系统托管，行为 = 普通页面跳转。
+        入口点击（SettingsPageInjector）用显式 ComponentName 跳转，不受包可见性限制。
     -->
     <application
         android:name=".XiaoAiApplication"
@@ -24,17 +25,24 @@
         tools:targetApi="35">
 
         <!--
+            设置页：运行在模块自己的进程。
+            exported=true：宿主 com.mi.health 需要显式 ComponentName 启动它。
+            singleTask：避免重复实例。
+        -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|uiMode|keyboardHidden" />
+
+        <!--
             ★ 现代 libxposed API 模块**不需要**任何 Xposed meta-data。
             框架直接从 APK 里读这三个文件：
               META-INF/xposed/module.prop      —— minApiVersion / targetApiVersion / staticScope
               META-INF/xposed/java_init.list   —— 入口类全限定名
               META-INF/xposed/scope.list       —— 作用域包名
             模块名取 android:label，模块说明取 android:description（见上面 application 标签）。
-
-            之前这里残留的 xposedmodule / xposeddescription / xposedminversion=82 是
-            legacy API 的声明方式：在 LSPosed 1.10+ 上不但没用，还会让管理器把模块
-            识别成已废弃的 legacy 模块（能勾选、但框架不会加载 → 无入口、无日志）。
-            已全部移除。
         -->
     </application>
 

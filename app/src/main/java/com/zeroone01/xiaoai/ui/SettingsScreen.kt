@@ -1,7 +1,10 @@
 package com.zeroone01.xiaoai.ui
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,18 +12,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,44 +29,34 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
+import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Add
-import top.yukonga.miuix.kmp.icon.extended.Delete
-import top.yukonga.miuix.kmp.icon.extended.ExpandLess
-import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.zeroone01.xiaoai.core.AiConfig
-import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.ProviderConfig
 import com.zeroone01.xiaoai.core.ProviderType
 import java.util.UUID
 
 /**
- * 设置页主界面（v0.1.0-beta5：行式布局）。
+ * 设置页主界面（v0.1.0-beta7：独立 Activity + 行内操作版）。
  *
- * 规范（来自用户）：
- *  - 第 1 行：小爱同学（默认、不可删除）
- *  - 第 2 行：「+ 添加」按钮（点击新增一行，按钮自动下移到新行末尾）
- *  - 后续每一行：左侧 = 用户起的名字（可编辑）；右侧 = 「设置/收起」按钮
- *  - 展开状态：行内显示「提供商类型 / API Key / 模型名 / Base URL」等字段
- *  - 顶部右上角：保存按钮（写入磁盘）
- *  - 顶部右上角：关闭按钮（退回上一页）
- *
- * 设计要点：
- *  - 编辑直接走 in-memory 的 `draftProviders`（可立即反映在 UI 上），
- *    点保存才落盘。
- *  - 行的「展开/收起」状态用 mutableStateMapOf 按 key 维护。
- *  - 小爱那一行不能编辑名字、不能删除、不能展开。
+ * ## 交互规范（逐条来自用户反馈）
+ *  - **添加 = 下拉菜单**：点「添加」展开提供商类型选择列表（DeepSeek/智谱/OpenAI/
+ *    月之暗面/自定义），选中才建行并预填模板值 —— 不再一上来就多一行空白。
+ *  - **行内保存**：每行展开区底部「保存」，点击立即落盘并广播给手环端，收起表单。
+ *    屏幕右上角的全局保存已删除（用户：谁注意得到？）。
+ *  - **删除 = 确认即保存**：点删除弹确认框，确认后立即落盘，不需要再去点保存。
+ *  - **排序**：每行有 ↑ ↓ 按钮，调整顺序立即生效。
+ *  - **编辑**：每行右侧"编辑"展开表单（名称/类型下拉/API Key/Base URL/模型名/启用）。
+ *  - **切换模型**：点行主体立即切换为当前使用（高亮 ✓）。
+ *  - **高级开关**：改动即保存。
+ *  - **动画**：行展开/收起用 animateContentSize 过渡。
+ *  - **返回**：顶栏 ← = Activity.finish（回宿主上一页）；诊断子页由 BackHandler 接管。
  */
 @Composable
 fun SettingsScreen(
@@ -76,406 +66,439 @@ fun SettingsScreen(
     onOpenDiagnostics: () -> Unit = {},
     isDarkTheme: Boolean = false,
 ) {
-    val scope = rememberCoroutineScope()
-
-    // 草稿：以 providers 的 key 为索引；保证编辑过程中行不会重排
-    val draftProviders = remember {
-        mutableStateMapOf<String, ProviderConfig>().apply {
-            config.providers.forEach { put(it.key, it) }
-        }
-    }
+    // ---- 编辑草稿（未点"保存"前的临时值）----
+    val drafts = remember { mutableStateMapOf<String, ProviderConfig>() }
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
+    val adding = remember { mutableStateOf(false) }
+    val deleteTarget = remember { mutableStateOf<String?>(null) }
 
-    // 行顺序：磁盘顺序（保留 XIAOAI 在第一位）
-    // ★ beta6 修复：用 mutableStateListOf 让 add/remove 触发 recomposition。
-    //   旧的 `MutableList` 不是 Compose observable，加行 / 删行 UI 不刷新。
+    // ---- 顺序（磁盘顺序为准；上移/下移操作此列表后立即保存）----
     val rowOrder = remember(config.providers) {
         mutableStateListOf<String>().apply { addAll(config.providers.map { it.key }) }
     }
 
-    // 同步磁盘版本到草稿（外部进程修改后切回来 UI 时也能跟上）
-    LaunchedEffect(config.providers) {
-        config.providers.forEach { p ->
-            if (!draftProviders.containsKey(p.key)) {
-                draftProviders[p.key] = p
+    fun saveProviders(newProviders: List<ProviderConfig>, newOrder: List<String> = rowOrder.toList()) {
+        val ordered = newOrder.mapNotNull { key -> newProviders.firstOrNull { it.key == key } }
+            .let { list ->
+                // 未进 order 的新行追加在尾部
+                list + newProviders.filter { p -> list.none { it.key == p.key } }
             }
-        }
-        // 清理已被磁盘删掉的行
-        val diskKeys = config.providers.map { it.key }.toSet()
-        val removed = draftProviders.keys.filter { it !in diskKeys }
-        removed.forEach { draftProviders.remove(it); expanded.remove(it) }
-        // rowOrder 同步（observable list，自动触发 recomposition）
-        val toRemove = rowOrder.filter { it !in diskKeys }
-        toRemove.forEach { rowOrder.remove(it) }
-        config.providers.map { it.key }.forEach { k ->
-            if (k !in rowOrder) rowOrder.add(k)
-        }
+        // 小爱行永远排第一
+        val fixed = ordered.sortedBy { if (it.isXiaoAi) 0 else 1 }
+        onSave(config.copy(providers = fixed))
     }
 
-    Column(
+    fun draftOf(p: ProviderConfig): ProviderConfig = drafts[p.key] ?: p
+
+    fun updateDraft(p: ProviderConfig) {
+        drafts[p.key] = p
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(if (isDarkTheme) Color(0xFF101013) else Color(0xFFF7F7F8))
-            .verticalScroll(rememberScrollState()),
     ) {
-        // ============================================================ 顶栏
-        SmallTopAppBar(
-            title = "AI 助手设置",
-            actions = {
-                IconButton(
-                    onClick = {
-                        // 把草稿按 rowOrder 拍平成新 list 写盘
-                        val newList = rowOrder.mapNotNull { draftProviders[it] }
-                        onSave(config.copy(providers = newList))
-                        scope.launch { /* 视觉反馈占位 */ }
-                    },
-                    modifier = Modifier.padding(end = 4.dp),
-                ) {
-                    Text(
-                        text = "保存",
-                        style = MiuixTheme.textStyles.button,
-                        color = MiuixTheme.colorScheme.primary,
-                    )
-                }
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.padding(end = 12.dp),
-                ) {
-                    Text(
-                        text = "关闭",
-                        style = MiuixTheme.textStyles.button,
-                        color = MiuixTheme.colorScheme.primary,
-                    )
-                }
-            },
-        )
-
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .padding(top = 4.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
         ) {
-            Text(
-                text = "在小米运动健康里把「小爱同学」换成你自己的 AI，并可用手环语音切换模型。",
-                style = MiuixTheme.textStyles.footnote1,
-                color = if (isDarkTheme) Color(0xFFB0B3B5) else Color(0xFF606060),
-                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-            )
+            // ======================================================== 顶栏（← 标题）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "←",
+                    fontSize = 24.sp,
+                    color = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { onClose() }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                )
+                Text(
+                    text = "AI 助手设置",
+                    style = MiuixTheme.textStyles.title2,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
 
-            // ================================================== 提供方列表
-            rowOrder.forEach { key ->
-                val provider = draftProviders[key] ?: return@forEach
-                if (provider.isXiaoAi) {
-                    XIAOAIRow(provider = provider, isActive = config.activeModelKey == key)
-                } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "把「小爱同学」换成你自己的 AI，每行改完点「保存」立即生效。",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = if (isDarkTheme) Color(0xFFB0B3B5) else Color(0xFF606060),
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+
+                // ================================================ 行 1：小爱同学
+                val xiaoAi = config.providers.firstOrNull { it.isXiaoAi }
+                if (xiaoAi != null) {
+                    Card {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSave(config.copy(activeModelKey = xiaoAi.key)) }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("小爱同学", style = MiuixTheme.textStyles.title3)
+                                Text(
+                                    "小米原生，不拦截",
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                                )
+                            }
+                            if (config.activeModelKey == xiaoAi.key) {
+                                Text(
+                                    "✓ 使用中",
+                                    color = MiuixTheme.colorScheme.primary,
+                                    style = MiuixTheme.textStyles.footnote1,
+                                )
+                            } else {
+                                Text(
+                                    "点击使用",
+                                    color = MiuixTheme.colorScheme.primary,
+                                    style = MiuixTheme.textStyles.footnote1,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ================================================ 第三方 provider 行
+                rowOrder.forEach { key ->
+                    val saved = config.providers.firstOrNull { it.key == key } ?: return@forEach
+                    if (saved.isXiaoAi) return@forEach
+                    val p = draftOf(saved)
+                    val xiaoAiExists = config.providers.any { it.isXiaoAi }
                     ProviderRow(
-                        provider = provider,
+                        saved = saved,
+                        draft = p,
                         expanded = expanded[key] == true,
                         isActive = config.activeModelKey == key,
-                        onNameChange = { newName ->
-                            draftProviders[key] = provider.copy(displayName = newName)
+                        isFirst = rowOrder.indexOf(key) <= (if (xiaoAiExists) 1 else 0),
+                        isLast = key == rowOrder.lastOrNull(),
+                        onToggleExpand = { expanded[key] = !(expanded[key] ?: false) },
+                        onDraftChange = { updateDraft(it) },
+                        onSaveRow = {
+                            // 行内保存：草稿合入 config → 立即落盘（onSave 内部会广播）
+                            val merged = config.providers.map { if (it.key == key) p else it }
+                            saveProviders(merged)
+                            drafts.remove(key)
+                            expanded[key] = false
                         },
-                        onToggle = { expanded[key] = !(expanded[key] ?: false) },
-                        onUpdate = { updated ->
-                            draftProviders[key] = updated
+                        onDelete = { deleteTarget.value = key },
+                        onMoveUp = {
+                            val idx = rowOrder.indexOf(key)
+                            if (idx > 1) {
+                                rowOrder.removeAt(idx)
+                                rowOrder.add(idx - 1, key)
+                                saveProviders(config.providers)
+                            }
                         },
-                        onDelete = {
-                            draftProviders.remove(key)
-                            expanded.remove(key)
-                            rowOrder.remove(key)
+                        onMoveDown = {
+                            val idx = rowOrder.indexOf(key)
+                            if (idx in 1 until rowOrder.lastIndex) {
+                                rowOrder.removeAt(idx)
+                                rowOrder.add(idx + 1, key)
+                                saveProviders(config.providers)
+                            }
+                        },
+                        onSetActive = { onSave(config.copy(activeModelKey = key)) },
+                        onEnabledChange = { enabled ->
+                            val merged = config.providers.map {
+                                if (it.key == key) p.copy(enabled = enabled) else it
+                            }
+                            saveProviders(merged)
                         },
                         isDarkTheme = isDarkTheme,
                     )
                 }
+
+                // ================================================ 添加（下拉菜单）
+                AddProviderCard(
+                    expanded = adding.value,
+                    onToggle = { adding.value = !adding.value },
+                    onSelectType = { type ->
+                        adding.value = false
+                        val newKey = "u-" + UUID.randomUUID().toString().take(8)
+                        val np = ProviderConfig(
+                            key = newKey,
+                            displayName = type.displayName,
+                            providerType = type,
+                            baseUrl = type.defaultBaseUrl,
+                            model = type.defaultModel,
+                            enabled = false,
+                        )
+                        drafts[newKey] = np
+                        // 新行进磁盘（占位，enabled=false 不影响拦截），并展开编辑
+                        saveProviders(config.providers + np, rowOrder.toList() + newKey)
+                        rowOrder.add(newKey)
+                        expanded[newKey] = true
+                    },
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                // ================================================ 高级设置（开关即保存）
+                AdvancedCard(
+                    config = config,
+                    onUpdate = { onSave(it) },
+                    isDarkTheme = isDarkTheme,
+                )
+
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    text = "运行诊断",
+                    onClick = onOpenDiagnostics,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
+        }
 
-            // ================================================== 「添加」按钮（永远在最后一行）
-            AddProviderRow(
-                onAdd = {
-                    val newKey = "u-" + UUID.randomUUID().toString().take(8)
-                    val newProvider = ProviderConfig(
-                        key = newKey,
-                        displayName = "新提供方",
-                        providerType = ProviderType.CUSTOM,
-                    )
-                    draftProviders[newKey] = newProvider
-                    expanded[newKey] = true
-                    rowOrder.add(newKey)
+        // ================================================ 删除确认框（自绘，确认即保存）
+        deleteTarget.value?.let { target ->
+            ConfirmDialog(
+                title = "删除这个提供方？",
+                message = "「${config.providers.firstOrNull { it.key == target }?.displayName ?: target}」将被移除并立即保存。",
+                confirmText = "删除",
+                onConfirm = {
+                    deleteTarget.value = null
+                    drafts.remove(target)
+                    expanded.remove(target)
+                    val idx = rowOrder.indexOf(target)
+                    if (idx >= 0) rowOrder.removeAt(idx)
+                    saveProviders(config.providers.filter { it.key != target })
                 },
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            // ================================================== 高级设置
-            AdvancedCard(
-                config = config,
-                onUpdate = { updated -> onSave(updated) },
+                onDismiss = { deleteTarget.value = null },
                 isDarkTheme = isDarkTheme,
-            )
-
-            Spacer(Modifier.height(8.dp))
-            TextButton(
-                text = "运行诊断",
-                onClick = onOpenDiagnostics,
-                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
 }
 
 // ======================================================================
-// 行 1：小爱同学（固定）
+// 第三方 provider 行
 // ======================================================================
 
 @Composable
-private fun XIAOAIRow(provider: ProviderConfig, isActive: Boolean) {
-    Card {
+private fun ProviderRow(
+    saved: ProviderConfig,
+    draft: ProviderConfig,
+    expanded: Boolean,
+    isActive: Boolean,
+    isFirst: Boolean,
+    isLast: Boolean,
+    onToggleExpand: () -> Unit,
+    onDraftChange: (ProviderConfig) -> Unit,
+    onSaveRow: () -> Unit,
+    onDelete: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onSetActive: () -> Unit,
+    onEnabledChange: (Boolean) -> Unit,
+    isDarkTheme: Boolean,
+) {
+    Card(modifier = Modifier.animateContentSize()) {
+        // ---------- 折叠标题栏 ----------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .clickable { onSetActive() }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "小爱同学",
+                    text = draft.displayName.ifBlank { draft.providerType.displayName },
                     style = MiuixTheme.textStyles.title3,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "小米原生，不拦截",
+                    text = buildString {
+                        append(draft.providerType.displayName)
+                        if (draft.model.isNotBlank()) append(" · ${draft.model}")
+                        if (!saved.enabled) append("（已停用）")
+                        // 有未保存草稿时提示
+                        if (draft != saved) append(" · 有未保存修改")
+                    },
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
                 )
             }
             if (isActive) {
                 Text(
-                    text = "✓ 当前使用",
+                    "✓ 使用中",
                     color = MiuixTheme.colorScheme.primary,
                     style = MiuixTheme.textStyles.footnote1,
-                )
-            } else {
-                Text(
-                    text = "切换",
-                    color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-                    style = MiuixTheme.textStyles.footnote1,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-        }
-    }
-}
-
-// ======================================================================
-// 行 2+：可编辑的 provider 行
-// ======================================================================
-
-@Composable
-private fun ProviderRow(
-    provider: ProviderConfig,
-    expanded: Boolean,
-    isActive: Boolean,
-    onNameChange: (String) -> Unit,
-    onToggle: () -> Unit,
-    onUpdate: (ProviderConfig) -> Unit,
-    onDelete: () -> Unit,
-    isDarkTheme: Boolean,
-) {
-    Card {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // ---------- 标题栏 ----------
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    TextField(
-                        value = provider.displayName.ifBlank { provider.providerType.displayName },
-                        onValueChange = onNameChange,
-                        singleLine = true,
-                        label = "名称",
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (isActive) {
-                        Text(
-                            text = "✓ 当前使用中",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 2.dp, start = 4.dp),
-                        )
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                if (expanded) {
-                    IconButton(onClick = onToggle) {
-                        Icon(imageVector = MiuixIcons.ExpandLess, contentDescription = "收起")
-                    }
-                    IconButton(onClick = onDelete) {
-                        Icon(
-                            imageVector = MiuixIcons.Delete,
-                            contentDescription = "删除",
-                            tint = Color(0xFFE53935),
-                        )
-                    }
-                } else {
-                    IconButton(onClick = onToggle) {
-                        Icon(imageVector = MiuixIcons.Settings, contentDescription = "设置")
-                    }
-                }
-            }
-            // ---------- 展开 ----------
-            if (expanded) {
-                HorizontalDivider()
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    ProviderTypeSelector(
-                        current = provider.providerType,
-                        onSelect = { newType ->
-                            val updated = provider.copy(
-                                providerType = newType,
-                                baseUrl = provider.baseUrl.ifBlank { newType.defaultBaseUrl },
-                                model = provider.model.ifBlank { newType.defaultModel },
-                                displayName = provider.displayName.ifBlank { newType.displayName },
-                            )
-                            onUpdate(updated)
-                        },
-                    )
-
-                    TextField(
-                        value = provider.apiKey,
-                        onValueChange = { onUpdate(provider.copy(apiKey = it)) },
-                        label = "API Key",
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-
-                    TextField(
-                        value = provider.baseUrl,
-                        onValueChange = { onUpdate(provider.copy(baseUrl = it)) },
-                        label = "Base URL",
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        text = "OpenAI 兼容端点，例如 https://api.deepseek.com/v1",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-                        modifier = Modifier.padding(start = 4.dp),
-                    )
-
-                    TextField(
-                        value = provider.model,
-                        onValueChange = { onUpdate(provider.copy(model = it)) },
-                        label = "模型名",
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        text = "例如 deepseek-chat / glm-4-flash / gpt-4o-mini",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-                        modifier = Modifier.padding(start = 4.dp),
-                    )
-
-                    val ready = provider.apiKey.isNotBlank() &&
-                        provider.baseUrl.isNotBlank() &&
-                        provider.model.isNotBlank()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (ready) {
-                            Text(
-                                text = "可启用",
-                                style = MiuixTheme.textStyles.footnote1,
-                                color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else {
-                            Text(
-                                text = "需要先填齐 API Key / Base URL / 模型名才能启用",
-                                style = MiuixTheme.textStyles.footnote1,
-                                color = if (isDarkTheme) Color(0xFFE0B400) else Color(0xFFB58900),
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        Switch(
-                            checked = provider.enabled,
-                            onCheckedChange = { onUpdate(provider.copy(enabled = it)) },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = if (provider.enabled) "已启用" else "已停用",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ======================================================================
-// 添加按钮行（永远在最后一行）
-// ======================================================================
-
-@Composable
-private fun AddProviderRow(onAdd: () -> Unit) {
-    Card {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            IconButton(onClick = onAdd) {
-                Icon(
-                    imageVector = MiuixIcons.Add,
-                    contentDescription = "添加提供方",
-                    tint = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 8.dp),
                 )
             }
             Text(
-                text = "添加",
+                text = if (expanded) "收起" else "编辑",
                 color = MiuixTheme.colorScheme.primary,
-                style = MiuixTheme.textStyles.button,
-                modifier = Modifier.padding(start = 4.dp, end = 8.dp),
+                style = MiuixTheme.textStyles.footnote1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { onToggleExpand() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             )
+        }
+
+        // ---------- 展开编辑区 ----------
+        if (expanded) {
+            HorizontalDivider()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // 名称
+                TextField(
+                    value = draft.displayName,
+                    onValueChange = { onDraftChange(draft.copy(displayName = it)) },
+                    label = "名称",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // 提供商类型（下拉菜单）
+                ProviderTypeDropdown(
+                    current = draft.providerType,
+                    onSelect = { type ->
+                        onDraftChange(
+                            draft.copy(
+                                providerType = type,
+                                baseUrl = type.defaultBaseUrl,
+                                model = type.defaultModel,
+                            )
+                        )
+                    },
+                )
+
+                // API Key
+                TextField(
+                    value = draft.apiKey,
+                    onValueChange = { onDraftChange(draft.copy(apiKey = it)) },
+                    label = "API Key",
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // Base URL
+                TextField(
+                    value = draft.baseUrl,
+                    onValueChange = { onDraftChange(draft.copy(baseUrl = it)) },
+                    label = "Base URL",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // 模型名
+                TextField(
+                    value = draft.model,
+                    onValueChange = { onDraftChange(draft.copy(model = it)) },
+                    label = "模型名",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // 启用开关（直接生效）
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("启用", style = MiuixTheme.textStyles.body1)
+                        Text(
+                            "停用的行不出现在手环切换菜单里",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                        )
+                    }
+                    Switch(checked = saved.enabled, onCheckedChange = onEnabledChange)
+                }
+
+                HorizontalDivider()
+
+                // ---------- 操作区：排序 / 删除 / 保存 ----------
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "↑",
+                        fontSize = 20.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !isFirst) { onMoveUp() }
+                            .background(
+                                if (isDarkTheme) Color(0xFF2A2A2E) else Color(0xFFF0F0F2)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        color = if (isFirst) Color.Gray else MiuixTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        "↓",
+                        fontSize = 20.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !isLast) { onMoveDown() }
+                            .background(
+                                if (isDarkTheme) Color(0xFF2A2A2E) else Color(0xFFF0F0F2)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        color = if (isLast) Color.Gray else MiuixTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "删除",
+                        color = Color(0xFFE53935),
+                        style = MiuixTheme.textStyles.body1,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onDelete() }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                    TextButton(
+                        text = "保存",
+                        onClick = onSaveRow,
+                        modifier = Modifier.weight(0.35f),
+                    )
+                }
+            }
         }
     }
 }
 
 // ======================================================================
-// 提供商类型选择 —— 点击展开式下拉（v0.1.0-beta6）
+// 提供商类型下拉菜单
 // ======================================================================
 
 /**
- * 规格（用户原话）：「我要的选择模型是下拉菜单」。
+ * 「下拉菜单」选择器（用户三次强调的交互）。
  *
- * 设计：Miuix 提供的 `Dropdown` 在 LSPosed 模块的 Compose 子树里依赖 PopupWindow，
- * 而 Popup 链路会触发宿主 Resources$NotFoundException（见 SettingsWindowController
- * 关于 ContextWrapper 的修复说明）。所以这里**手写一个轻量下拉**：
- *  - 第一行：当前选中的类型（ChevronDown 图标 + 描述文字）
- *  - 点击第一行 → 展开一组 BasicComponent 风格的选项
- *  - 选中某项 → 自动收起，调用 [onSelect]
- *
- * 这样避开了任何 Popup/Dropdown 组件依赖，且视觉上仍然是"下拉菜单"的形态。
+ * 收起态 = 一行当前值（+ 右侧 ∨）；点击展开选项列表（animateContentSize 动画），
+ * 点选即更新并收起。不依赖 Popup/DropdownMenu 组件 —— 那条链在宿主进程会踩
+ * Resources$NotFoundException（beta6 教训）；独立 Activity 下虽然资源没问题，
+ * 但自实现下拉的行为与 HyperOS 设置项一致、且零依赖风险。
  */
 @Composable
-private fun ProviderTypeSelector(
+private fun ProviderTypeDropdown(
     current: ProviderType,
     onSelect: (ProviderType) -> Unit,
 ) {
@@ -483,74 +506,120 @@ private fun ProviderTypeSelector(
     val options = remember { ProviderType.entries.filter { it != ProviderType.XIAOAI } }
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = "提供商类型",
-            style = MiuixTheme.textStyles.footnote2,
-            color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-        Card {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // ---------- 当前选中行（点击展开 / 收起） ----------
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(6.dp))
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = current.displayName, style = MiuixTheme.textStyles.body1)
-                        if (current.defaultBaseUrl.isNotBlank()) {
+        // 当前值行（点击展开/收起）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(MiuixTheme.colorScheme.surface)
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "提供商类型",
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                )
+                Text(current.displayName, style = MiuixTheme.textStyles.body1)
+            }
+            Text(
+                text = if (expanded) "∧" else "∨",
+                fontSize = 16.sp,
+                color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+            )
+        }
+        // 选项列表（展开动画）
+        if (expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MiuixTheme.colorScheme.surface)
+                    .animateContentSize(),
+            ) {
+                options.forEachIndexed { i, type ->
+                    if (i > 0) HorizontalDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelect(type)
+                                expanded = false
+                            }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(type.displayName, style = MiuixTheme.textStyles.body1)
+                            if (type.defaultBaseUrl.isNotBlank()) {
+                                Text(
+                                    "${type.defaultBaseUrl} · ${type.defaultModel}",
+                                    style = MiuixTheme.textStyles.footnote2,
+                                    color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                                )
+                            }
+                        }
+                        if (type == current) {
                             Text(
-                                text = "${current.defaultBaseUrl} · ${current.defaultModel}",
-                                style = MiuixTheme.textStyles.footnote2,
-                                color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                                "✓",
+                                color = MiuixTheme.colorScheme.primary,
+                                style = MiuixTheme.textStyles.body1,
                             )
                         }
                     }
-                    IconButton(onClick = { expanded = !expanded }) {
-                        Icon(
-                            imageVector = if (expanded) MiuixIcons.ExpandLess else MiuixIcons.Settings,
-                            contentDescription = if (expanded) "收起" else "展开",
-                        )
-                    }
                 }
-                // ---------- 展开后的选项列表 ----------
-                if (expanded) {
-                    HorizontalDivider()
-                    options.forEachIndexed { i, type ->
-                        if (i > 0) HorizontalDivider()
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = type.displayName, style = MiuixTheme.textStyles.body1)
-                                if (type.defaultBaseUrl.isNotBlank()) {
-                                    Text(
-                                        text = "${type.defaultBaseUrl} · ${type.defaultModel}",
-                                        style = MiuixTheme.textStyles.footnote2,
-                                        color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
-                                    )
-                                }
-                            }
-                            if (type == current) {
+            }
+        }
+    }
+}
+
+// ======================================================================
+// 「添加」卡片：点开 = 提供商类型下拉
+// ======================================================================
+
+@Composable
+private fun AddProviderCard(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onSelectType: (ProviderType) -> Unit,
+) {
+    Card(modifier = Modifier.animateContentSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggle() }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = if (expanded) "∧ 收起选项" else "＋ 添加提供方",
+                color = MiuixTheme.colorScheme.primary,
+                style = MiuixTheme.textStyles.button,
+            )
+        }
+        if (expanded) {
+            HorizontalDivider()
+            Column(modifier = Modifier.fillMaxWidth()) {
+                ProviderType.entries.filter { it != ProviderType.XIAOAI }.forEachIndexed { i, type ->
+                    if (i > 0) HorizontalDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectType(type) }
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(type.displayName, style = MiuixTheme.textStyles.body1)
+                            if (type.defaultBaseUrl.isNotBlank()) {
                                 Text(
-                                    text = "✓ 当前",
-                                    color = MiuixTheme.colorScheme.primary,
-                                    style = MiuixTheme.textStyles.footnote1,
-                                )
-                            } else {
-                                TextButton(
-                                    text = "选择",
-                                    onClick = {
-                                        onSelect(type)
-                                        expanded = false
-                                    },
+                                    "${type.defaultBaseUrl} · ${type.defaultModel}",
+                                    style = MiuixTheme.textStyles.footnote2,
+                                    color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
                                 )
                             }
                         }
@@ -562,7 +631,62 @@ private fun ProviderTypeSelector(
 }
 
 // ======================================================================
-// 高级设置
+// 确认对话框（自绘遮罩 + 卡片；确认即执行）
+// ======================================================================
+
+@Composable
+private fun ConfirmDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    isDarkTheme: Boolean,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Card(
+            modifier = Modifier
+                .padding(horizontal = 32.dp)
+                .clickable(enabled = false) {},
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(title, style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.SemiBold)
+                Text(
+                    message,
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    TextButton(
+                        text = "取消",
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        text = confirmText,
+                        onClick = onConfirm,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ======================================================================
+// 高级设置（开关改动即保存）
 // ======================================================================
 
 @Composable

@@ -146,6 +146,18 @@ internal object HookCompat {
         /** 原方法抛出的异常（仅 after 阶段有效，等价 legacy `param.throwable`） */
         internal var resultError: Throwable? = null
 
+        /**
+         * before 阶段的"跳过"请求标记。
+         *
+         * ★ 实现说明：不能在 before 回调里直接调 `chain.proceedWith(x)` —— API 102 的
+         * Chain 是单次推进语义，proceedWith 之后外层再调 proceed() 会违反契约。
+         * 所以这里只**记录意图**，由 [BeforeAfterHooker.intercept] 统一执行：
+         * before 结束后若 skipRequested==true，直接返回 skipValue，不再调 proceed()。
+         */
+        internal var skipRequested: Boolean = false
+
+        internal var skipValue: Any? = null
+
         /** 在 after 阶段读取原方法返回值 */
         val result: Any? get() = resultValue
 
@@ -176,14 +188,12 @@ internal object HookCompat {
          * 在 before 阶段跳过原方法并返回指定值。
          *
          * 语义与 legacy 的 `param.setResult(x)` 一致：**原方法体不会执行**。
-         *
-         * 注意 API 102 的签名是 `proceedWith(Object)`（形参非空），传 null 会让
-         * Kotlin 的 null 检查在编译期报错。如果确实需要「返回 null 并跳过」，
-         * 标准做法是抛一个受控异常，或者干脆让原方法执行完再改结果——
-         * 本模块走后者，所以这里用 `Any` 而非 `Any?`。
          */
-        @Throws(Throwable::class)
-        fun returnAndSkip(value: Any): Any? = chain.proceedWith(value)
+        fun returnAndSkip(value: Any): Any? {
+            skipRequested = true
+            skipValue = value
+            return value
+        }
 
         /** 改写参数 */
         fun setArg(index: Int, value: Any?) {
@@ -215,6 +225,10 @@ internal object HookCompat {
                     before(ctx)
                 } catch (t: Throwable) {
                     XLog.e("Hook[$tag] before 异常", t)
+                }
+                // before 请求跳过原方法 → 直接返回替换值（legacy setResult 语义）
+                if (ctx.skipRequested) {
+                    return ctx.skipValue
                 }
             }
 

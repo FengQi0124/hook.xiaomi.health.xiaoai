@@ -316,6 +316,10 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
         installed += hookJsonFallback(loader, e, model)
         // getPayload 兜底不强依赖 app；installAivsHooks 里 app 为 null 也照常挂上。
         installed += hookMessageGetPayload(loader, e, model)
+        // ★ v0.1.0-beta7：payload getter 保底 —— 用户 APK 上 Toast 类解析成功
+        //   （beta5 日志），但 Message/EventHeader 全 null；getter hook 不依赖这两个类，
+        //   只要 toastClass/toastStreamClass 有一个命中就能工作。
+        installed += hookPayloadGetters(e, model)
 
         XLog.i("[$TAG] Hook 安装完成，共安装 $installed 个 Hook 点")
         if (installed == 0) {
@@ -325,6 +329,103 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
             )
         }
     }
+
+    // ---------------------------------------------------------------- 2.5 payload getter 保底
+
+    /** 正在处理中的 payload（防同一线程/并发对同一 payload 重复触发 AI 请求） */
+    private val processingPayloads = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<Any, kotlin.Boolean>()
+    )
+
+    /**
+     * Hook `Template$Toast#getText()` / `ToastV2#getText()` / `ToastStream#getMarkdownText()`。
+     *
+     * ## 为什么这是"保底"挂点（但可能是最稳的）
+     * py 在网络层能拿到完整 JSON（header.namespace/name + payload.text）；Java 层
+     * 想拿等价信息必须解析 Message/header —— 而用户 APK 上 Message/EventHeader 类
+     * 解析全失败（beta5 日志），dispatch/getPayload 钩子全部失效。
+     *
+     * **但 payload 类本身解析成功了**（`Template$Toast` 等）。任何 UI/TTS 显示回答文本
+     * 都必然调用 `getText()`（kotlinx.serialization 反序列化写字段，显示走 getter）。
+     * 在 getter 的 before 里：
+     *  1. 阻塞等 AI 返回（与 py 的 `await asyncio.wait_for` 语义一致）；
+     *  2. `returnAndSkip(reply)` 直接替换返回值；
+     *  3. 同时把字段本身也改写（writeText），后续其他消费者（历史记录等）也能拿到。
+     *
+     * ## 局限
+     * getter 的 `this` 是 payload，拿不到 header.dialog_id —— 提问匹配用
+     * [InterceptEngine] 的"最近一条提问" fallback（手环同一时间只有一轮对话，等价 py）。
+     */
+    private fun hookPayloadGetters(engine: InterceptEngine, model: AivsModel): Int {
+        var count = 0
+
+        data class GetterTarget(val owner: Class<*>, val getters: List<String>)
+
+        val targets = mutableListOf<GetterTarget>()
+        model.toastClass?.let { targets.add(GetterTarget(it, listOf("getText"))) }
+        model.toastV2Class?.let { targets.add(GetterTarget(it, listOf("getText"))) }
+        model.toastStreamClass?.let { targets.add(GetterTarget(it, listOf("getMarkdownText", "getText"))) }
+        model.styleToastStreamStartClass?.let {
+            targets.add(GetterTarget(it, listOf("getMarkdownText", "getText")))
+        }
+        model.generateSpeakClass?.let { targets.add(GetterTarget(it, listOf("getText"))) }
+
+        targets.forEach { target ->
+            target.getters.forEach { getterName ->
+                Reflect.findMethodsByName(target.owner, getterName)
+                    .filter { it.parameterCount == 0 && it.returnType == String::class.java }
+                    .forEach { m ->
+                        val ok = HookCompat.hook(
+                            this, m,
+                            before = { ctx ->
+                                val payload = ctx.thisObject ?: return@hook
+                                // 防重入：同一线程内 UI/TTS 会多次调 getText；
+                                // 我们在第一次调用里阻塞处理并改写字段，后续调用
+                                // 原方法返回的就是新文本，无需再拦截。
+                                if (!processingPayloads.add(payload)) return@hook
+                                try {
+                                    val handled = engine.onAnswerPayloadOnly(payload) { text ->
+                                        // 字段也写回（TTS/历史等其他消费路径同步看到新文本）
+                                        writePayloadText(payload, currentName(payload), text)
+                                    }
+                                    if (handled) {
+                                        // 直接替换返回值（跳过原方法）
+                                        val reply = Reflector.getString(payload, currentFieldName(payload))
+                                        if (!reply.isNullOrBlank()) {
+                                            XLog.d("[$TAG] getter 替换返回值: ${reply.take(40)}")
+                                            ctx.returnAndSkip(reply)
+                                        }
+                                    }
+                                } finally {
+                                    processingPayloads.remove(payload)
+                                }
+                            },
+                            tag = "${target.owner.simpleName}#$getterName",
+                        )
+                        if (ok) {
+                            count++
+                            XLog.i(
+                                "[$TAG] 已 Hook ${target.owner.simpleName}#$getterName（getter 保底）"
+                            )
+                        }
+                    }
+            }
+        }
+        return count
+    }
+
+    /** getter hook 写回/读回时的消息名：从 Toast 类推断（拿不到 header 就按类名猜） */
+    private fun currentName(payload: Any): String {
+        val cls = payload.javaClass.simpleName
+        return when {
+            cls.contains("ToastStream") || cls.contains("StyleToastStream") -> AivsModel.NAME_TOAST_STREAM
+            else -> AivsModel.NAME_TOAST
+        }
+    }
+
+    /** getter hook 写回后读字段用：优先 markdown_text，其次 text */
+    private fun currentFieldName(payload: Any): String =
+        if (Reflector.fieldOf(payload.javaClass, "markdown_text") != null) "markdown_text" else "text"
 
     // ---------------------------------------------------------------- 2.1 分发方法
 
@@ -484,7 +585,16 @@ class XiaoAiHookEntry : XposedModule(), ModuleBridge {
     private fun writeText(msg: Any, ns: String, name: String, text: String): Boolean {
         val model = AivsModel.get()
         val payload = model.payloadOf(msg) ?: return false
+        return writePayloadText(payload, name, text)
+    }
 
+    /**
+     * 直接把文本写进 **payload 对象**（不走 message 外壳）。
+     *
+     * getter 保底 Hook（[hookPayloadGetters]）拿到的 `this` 就是 payload 本身，
+     * 没有 message 外壳，所以写回也必须直接作用于 payload。
+     */
+    private fun writePayloadText(payload: Any, name: String, text: String): Boolean {
         val isStream = name == AivsModel.NAME_TOAST_STREAM ||
             name == AivsModel.NAME_STYLE_TOAST_STREAM_START ||
             Reflector.fieldOf(payload.javaClass, "markdown_text") != null

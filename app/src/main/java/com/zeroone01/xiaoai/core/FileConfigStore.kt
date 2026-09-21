@@ -22,12 +22,20 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class FileConfigStore(private val file: File) : ConfigStore {
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-        prettyPrint = true
-        isLenient = true
+    companion object {
+        /** 共享 JSON 实例（序列化格式必须与落盘一致，供 ConfigSync 广播序列化用） */
+        val sharedJson: Json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+            prettyPrint = true
+            isLenient = true
+        }
+
+        /** 把配置序列化成与磁盘格式完全一致的 JSON（ConfigSync 广播载荷） */
+        fun toJson(cfg: AiConfig): String = sharedJson.encodeToString(AiConfig.serializer(), cfg)
     }
+
+    private val json = sharedJson
 
     private val writeLock = Any()
     private val lastLoadedMtime = AtomicLong(-1L)

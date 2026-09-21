@@ -97,6 +97,8 @@ internal class AivsModel private constructor() {
         messageClass = findMessageClass()
         eventHeaderClass = Reflector.findClass(
             "com.xiaomi.ai.api.EventHeader",
+            "com.xiaomi.ai.api.common.EventHeader",
+            "com.xiaomi.ai.core.EventHeader",
             "com.xiaomi.ai.aivs.core.EventHeader",
             "ai.xiaomi.api.EventHeader",
             "com.xiaomi.aiasst.EventHeader",
@@ -106,6 +108,8 @@ internal class AivsModel private constructor() {
 
         instructionHeaderClass = Reflector.findClass(
             "com.xiaomi.ai.api.InstructionHeader",
+            "com.xiaomi.ai.api.common.InstructionHeader",
+            "com.xiaomi.ai.core.InstructionHeader",
             "com.xiaomi.ai.aivs.core.InstructionHeader",
             "ai.xiaomi.api.InstructionHeader",
         ) ?: Reflector.findClassByFields(
@@ -189,6 +193,8 @@ internal class AivsModel private constructor() {
     private fun findMessageClass(): Class<*>? {
         Reflector.findClass(
             "com.xiaomi.ai.api.Message",
+            "com.xiaomi.ai.api.common.Message",
+            "com.xiaomi.ai.core.Message",
             "com.xiaomi.ai.aivs.core.Message",
             "ai.xiaomi.api.Message",
             "com.xiaomi.aiasst.core.Message",
@@ -242,36 +248,57 @@ internal class AivsModel private constructor() {
     }
 
     /**
-     * 消息的方向判断。
+     * 消息的方向判断 —— **尽力而为，绝不阻塞拦截**。
      *
-     * 优先用 header 类型（最准）；失败时退回 namespace 白名单：
-     *  - `RecognizeResult` 一律 App→Cloud；
-     *  - `Application.*` 一律 Cloud→App（3.57.0 上唯一回答类型 GenerateSpeak 在这里）；
-     *  - `Template.*` 在 3.57.0 上 App→Cloud、3.59.1 上 Cloud→App，所以 namespace
-     *    白名单做不到，要靠 header 类型。
+     * ★ v0.1.0-beta7 教训（照 xiaoai_hijack.py 重写）：
+     * 之前 [isAnswerMessage] 强依赖「header 是 EventHeader」来判断 Cloud→App 方向，
+     * 但用户 APK 里 `EventHeader` 类解析结果是 null（直接类名不存在、字段指纹也被
+     * scanner 0-paths 拖垮），导致**所有回答消息都被判为"非回答"，一条都拦不到**——
+     * 这就是用户反馈"手环说切换模型，小爱还是直接回复"的根因。
+     *
+     * py 脚本（网络层）根本不需要判方向 —— WebSocket 天然分上下行。Java 层我们没有
+     * 免费的方向信息，所以策略改为：
+     *  1. **只按 (namespace, name) 白名单**（与 py 完全一致）；
+     *  2. 方向信息**仅用于排除**：能确凿证明 header 是 InstructionHeader（App→Cloud
+     *     指令）时才放行，证据不足照样拦 —— 宁可多拦（改写下行显示文本），不可漏拦。
+     *     把 App→Cloud 的上行 Toast 改写掉并无实际危害（手环只渲染下行回答）。
      */
     fun isCloudToApp(message: Any?): Boolean {
-        val header = headerOf(message) ?: return false
-        return isEventHeader(header)
+        val header = headerOf(message) ?: return true // 无 header 信息时保守当作下行
+        // 确凿的上行证据：header 明确是 InstructionHeader 类型
+        if (instructionHeaderClass?.isInstance(header) == true) return false
+        // EventHeader 解析成功且命中 → 下行
+        if (eventHeaderClass?.isInstance(header) == true) return true
+        // 类型解析不出来 → 看 header 类名（AIVS 未混淆字段/类名场景）
+        val clsName = header.javaClass.simpleName
+        if (clsName.contains("InstructionHeader")) return false
+        return true
     }
 
     /**
      * 这个消息是不是我们要拦截的「回答」消息。
      *
-     * 必须是 Cloud→App 且属于以下 (namespace, name) 之一：
-     *  - 3.59.1：`Template.Toast` / `Template.ToastV2` / `Template.ToastStream` /
-     *           `Template.StyleToastStreamStart`
-     *  - 3.57.0：`Application.GenerateSpeak`
+     * ★ v0.1.0-beta7（完全对齐 xiaoai_hijack.py）：
+     * 判定只看 (namespace, name) 白名单，方向判断仅作为「确凿上行证据才排除」的
+     * 辅助（见 [isCloudToApp]）。之前强依赖 EventHeader 类型判断，用户 APK 上该类
+     * 解析失败 → 恒 false → 手环永远收到小爱原始回答。
+     *
+     * 匹配列表（与 py 一致 + 向前兼容）：
+     *  - `Template.Toast` / `Template.ToastV2` / `Template.ToastStream` /
+     *    `Template.StyleToastStreamStart`（3.59.1 下行回答）
+     *  - `Application.GenerateSpeak`（3.57.0 下行回答）
      */
     fun isAnswerMessage(message: Any?): Boolean {
-        if (!isCloudToApp(message)) return false
         val ns = namespaceOf(message) ?: return false
         val name = nameOf(message) ?: return false
-        return when (ns) {
+        val nameMatches = when (ns) {
             "Template" -> name in ANSWER_TEMPLATE_NAMES
             "Application" -> name == NAME_GENERATE_SPEAK
             else -> false
         }
+        if (!nameMatches) return false
+        // 方向防误判：能确凿证明是 App→Cloud 指令时才放行（证据不足照样拦）
+        return isCloudToApp(message)
     }
 
     /** App→Cloud 的语音识别结果（所有版本方向一致） */
