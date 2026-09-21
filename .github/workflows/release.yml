@@ -42,11 +42,9 @@ jobs:
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           # 基础组件（这些一定存在）
           sdkmanager "platform-tools" "build-tools;36.0.0" 2>&1 | tail -3
-          # Android 37 是「次版本」SDK，包名可能带 .0 也可能不带，两种都试。
-          # 拿不到就退到 android-36 —— AGP 允许 compileSdk 高于已装 SDK 时自动降级。
-          sdkmanager "platforms;android-37.0" 2>&1 | tail -3 \
-            || sdkmanager "platforms;android-37" 2>&1 | tail -3 \
-            || sdkmanager "platforms;android-36" 2>&1 | tail -3 \
+          # 项目 compileSdk = 35。若无 35 则退到 34。
+          sdkmanager "platforms;android-35" 2>&1 | tail -3 \
+            || sdkmanager "platforms;android-34" 2>&1 | tail -3 \
             || true
           echo "===== 已安装 platform ====="
           ls -1 "$ANDROID_HOME/platforms" || true
