@@ -1,6 +1,6 @@
 name=手环小爱 AI 增强
-version=0.1.0-beta7
-versionCode=7
+version=0.1.0-beta14
+versionCode=14
 author=ZeroOne01
 description=把小米运动健康里手环/手表的小爱同学接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），可在手环上语音切换模型。作用域仅限小米运动健康，与手机版小爱同学无关。
 

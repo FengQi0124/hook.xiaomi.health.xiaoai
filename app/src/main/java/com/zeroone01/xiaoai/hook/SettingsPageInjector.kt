@@ -84,15 +84,15 @@ internal object SettingsPageInjector {
             return
         }
 
-        module.hookAfter(onCreate) { ctx ->
+        val cb = HookCallback { ctx ->
             val activity = ctx.thisObject as? Activity
-            if (activity == null || isAlreadyInjected(activity)) return@hookAfter
-            // 用 post() 等 ViewBinding 完全 inflate 完再插入，避免和原生 inflate 撞车
+            if (activity == null || isAlreadyInjected(activity)) return@HookCallback
             activity.window?.decorView?.post {
                 runCatching { tryInject(activity) }
                     .onFailure { XLog.d("注入设置页入口失败: ${it.message}") }
             }
         }
+        module.hookAfter(onCreate, cb)
         XLog.i("已 Hook ${activityClass.simpleName}#onCreate（after）")
     }
 
