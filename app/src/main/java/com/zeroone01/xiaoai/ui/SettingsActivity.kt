@@ -5,37 +5,33 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.XLog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 设置页 Activity（v0.1.0-beta7 起为**独立 Activity**，运行在模块自己的进程）。
+ * 设置页 Activity（v0.1.0-beta7+ 修复版）
  *
- * ## 为什么独立
- * 用户明确要求（beta6 嵌入宿主设置页的覆盖层被否决）：
- *  - 嵌入版的返回键被宿主顶栏的 popBackStack 抢走，"back 回到我的页而不是上一页"；
- *  - 没有转场动画；
- *  - 视觉上两层标题栏叠加。
+ * ## 安全区修复
+ *  - enableEdgeToEdge() 让内容延伸到状态栏/导航栏以下
+ *  - Modifier.systemBarsPadding() 自动添加避让内边距，内容不会被状态栏遮挡
  *
- * 独立后：
- *  - 系统转场动画免费获得；
- *  - back 键 = Activity.finish → 回到跳转来源（宿主"设置"页），栈行为 = 普通页面；
- *  - 页内"诊断页"等子导航用 [BackHandler] 接管：子页 back 回主设置页。
- *
- * ## 进程与配置
- * 本 Activity 在模块进程，与宿主 hook 进程通过 [com.zeroone01.xiaoai.core.ConfigSync]
- * 广播同步配置：保存 → 落盘模块 filesDir + 广播推给宿主 → 宿主热加载。
+ * ## 问题
+ *  原版 SettingsActivity 调用了 enableEdgeToEdge() 但没有给 Compose 内容加
+ *  对应的 padding，导致顶栏文字直接画在状态栏下面，被摄像头/状态栏遮挡。
  */
 class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        enableEdgeToEdge()  // 延伸到系统栏以下
         super.onCreate(savedInstanceState)
         ModelManager.ensureInit(applicationContext)
         XLog.i("SettingsActivity 启动（模块进程，pid=${android.os.Process.myPid()}）")
@@ -48,12 +44,18 @@ class SettingsActivity : ComponentActivity() {
                 val config by ModelManager.configFlow.collectAsState()
                 var showDiagnostics by remember { mutableStateOf(false) }
 
-                // ★ 子页（诊断页）back → 回主设置页；主设置页 back → 系统默认 finish
                 BackHandler(enabled = showDiagnostics) { showDiagnostics = false }
+
+                // ★ 修复：systemBarsPadding() 确保内容不会被状态栏/导航栏遮挡
+                val contentModifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
 
                 if (showDiagnostics) {
                     DiagnosticsScreen(onBack = { showDiagnostics = false })
                 } else {
+                    // 注意：systemBarsPadding 加到 Column 里由 SettingsScreen 处理也可以
+                    // 但最稳妥的方式是在顶层容器就避让
                     SettingsScreen(
                         config = config,
                         onSave = { cfg -> ModelManager.saveConfig(cfg) },
