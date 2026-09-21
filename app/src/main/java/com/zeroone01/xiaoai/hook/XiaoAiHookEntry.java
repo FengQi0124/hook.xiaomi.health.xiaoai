@@ -11,13 +11,12 @@ import java.lang.reflect.Executable;
 import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedModule;
+import io.github.libxposed.api.XposedModuleInterface;
 
 /**
  * LSPosed module entry (Java implementation).
  *
- * Matches beta7-era class shape: {@code public class XiaoAiHookEntry extends XposedModule}
- * with a public no-arg constructor. This is what LSPosed 102 framework expects and how it
- * was when the module worked in beta7.
+ * Matches beta7-era shape: public class + public no-arg constructor + extends XposedModule.
  */
 public class XiaoAiHookEntry extends XposedModule implements ModuleBridge {
 
@@ -27,18 +26,20 @@ public class XiaoAiHookEntry extends XposedModule implements ModuleBridge {
 
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
-        Context ctx = param.getApplicationContext();
-        if (ctx == null) ctx = param.getAppContext();
-        if (ctx == null) {
-            try {
-                Class<?> at = Class.forName("android.app.ActivityThread");
-                Object app = at.getMethod("currentApplication").invoke(null);
-                if (app instanceof Context) ctx = (Context) app;
-            } catch (Throwable t) {
-                XLog.e("Failed to obtain Context", t);
-                return;
-            }
+        // PackageReadyParam has no getApplicationContext(); use ActivityThread reflection.
+        Context ctx = null;
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app instanceof Context) ctx = (Context) app;
+        } catch (Throwable t) {
+            XLog.e("Failed to obtain Context", t);
         }
+        if (ctx == null) {
+            XLog.e("Context is null, aborting init");
+            return;
+        }
+
         XLog.init(ctx);
         XLog.i("onPackageReady: pkg=" + ctx.getPackageName());
 
@@ -77,7 +78,7 @@ public class XiaoAiHookEntry extends XposedModule implements ModuleBridge {
 
     @Override
     public boolean hookAfter(Constructor<?> ctor, HookCallback callback) {
-        return invokeAfter(ctor, callback);
+        return invokeAfter( ctor, callback);
     }
 
     private boolean invokeAfter(Executable exec, HookCallback callback) {
