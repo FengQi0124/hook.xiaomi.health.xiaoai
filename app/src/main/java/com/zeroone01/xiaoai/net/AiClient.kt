@@ -174,13 +174,6 @@ object AiClient {
         }
     }
 
-    /** 构造 [ChatRequest]，配置不完整时返回 null */
-    private fun chatRequestFor(cfg: AiConfig, forModelKey: String?): ChatRequest? {
-        if (cfg.isXiaoAiActive && forModelKey == null) return null  // 走小爱原生，不替换
-        val history = if (cfg.enableHistory) buildHistory(cfg.historyRounds) else emptyList()
-        return cfg.toChatRequest(history)
-    }
-
     private fun buildHistory(rounds: Int): List<ChatMessage> {
         val all = ModelManager.dialogs()
         val msgs = mutableListOf<ChatMessage>()

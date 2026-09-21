@@ -163,5 +163,4 @@ private fun JsonElement.toAnyValue(): Any? = when (this) {
     }
     is JsonObject -> toMapOfAny()
     is JsonArray -> map { it.toAnyValue() }
-    else -> null
 }
