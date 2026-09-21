@@ -135,11 +135,14 @@ object NativeHook {
     // ------------------------------------------------------------------ 4. native 方法
 
     /** 启动 SSL_read 内联 hook；返回 true 表示 hook 安装成功 */
+    @JvmStatic
     external fun nativeStart(): Boolean
 
     /** 停止 hook（进程退出 / 卸载时调用） */
+    @JvmStatic
     external fun nativeStop()
 
     /** 设置 native 日志开关 */
+    @JvmStatic
     external fun nativeSetLogEnable(enable: Boolean)
 }

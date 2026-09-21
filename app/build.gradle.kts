@@ -1,9 +1,7 @@
 import java.util.Properties
 
 plugins {
-    // 注意：AGP 9.0 起内置 Kotlin 支持，不再需要 `org.jetbrains.kotlin.android` 插件。
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
 
@@ -15,44 +13,30 @@ val localProps = Properties().apply {
 
 android {
     namespace = "com.zeroone01.xiaoai"
-    compileSdk = 37
-    // Android 37 是一个「次版本」SDK（package id: platforms;android-37.0），
-    // AGP 9 起通过 compileSdkMinor 指定次版本号。
-    compileSdkMinor = 0
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.zeroone01.xiaoai"
         minSdk = 24
-        targetSdk = 37
-        // 测试版：从 0.1.0 起步，versionCode 从 1 开始重新计数。
-        //
-        // 注意：打 tag 发布时，CI 以 git tag 为准（见 .github/workflows/release.yml
-        // 的「确定版本号」步骤），这里的值只是本地构建 / 非 tag 构建的默认值。
-        // 两者请保持同步，避免本地 APK 和线上 APK 版本号对不上。
-        versionCode = 15
-        versionName = "0.1.0-beta15"
+        targetSdk = 35
+        versionCode = 16
+        versionName = "0.1.0-beta16"
 
-        // 仅构建 LSPosed 目标架构
         ndk {
             abiFilters += setOf("arm64-v8a", "x86_64")
         }
     }
 
-    // 锁定本地已有的 NDK 版本，避免 AGP 去下载一个不存在的版本
     ndkVersion = "27.0.12077973"
+    buildToolsVersion = "35.0.0"
 
-    // build 工具集也锁定本地已有的（AGP 9 默认要 36.0.0，但我们只给了 37.0.0）
-    buildToolsVersion = "37.0.0"
-
-    // 原生 hook 库：hook libssl.so 的 SSL_read
     externalNativeBuild {
         cmake {
             path = file("cpp/CMakeLists.txt")
-            version = "3.28.3"  // 本地安装的是 cmake 3.28.3（/usr/bin/cmake），与 3.28.1 兼容
+            version = "3.28.3"
         }
     }
 
-    // 使用 release 签名以便 LSPosed 正常加载（debug 签名亦可，这里统一用调试密钥）
     signingConfigs {
         create("xiaoai") {
             storeFile = file("xiaoai.jks")
@@ -82,12 +66,10 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-            freeCompilerArgs.addAll("-jvm-default=no-compatibility")
         }
     }
 
     buildFeatures {
-        compose = true
         buildConfig = true
     }
 
@@ -110,32 +92,14 @@ android {
 }
 
 dependencies {
-    // ---- Xposed API（compileOnly：运行期由 LSPosed 框架提供）----
-    // io.github.libxposed:api —— 现代 Xposed API，替代已废弃的 de.robv.android.xposed:api。
-    // LSPosed 1.10+ 只加载这类模块，legacy 模块会被静默忽略（表现为「无日志、无入口」）。
     compileOnly(libs.xposed.api)
 
-    // ---- Miuix UI（Compose Multiplatform）----
-    implementation(libs.miuix.ui)
-    implementation(libs.miuix.preference)
-    implementation(libs.miuix.icons)
-
-    // ---- Compose ----
-    implementation(platform(libs.compose.bom))
-    implementation(libs.compose.ui)
-    implementation(libs.compose.ui.tooling.preview)
-    debugImplementation(libs.compose.ui.tooling)
-    implementation(libs.activity.compose)
-    implementation(libs.lifecycle.runtime.ktx)
-    implementation(libs.lifecycle.viewmodel.compose)
-
-    // ---- AndroidX 基础 ----
     implementation(libs.core.ktx)
-
-    // ---- 存储 ----
+    implementation(libs.activity)
+    implementation(libs.activity.ktx)
+    implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.datastore.preferences)
 
-    // ---- 网络 / 序列化 / 协程 ----
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)

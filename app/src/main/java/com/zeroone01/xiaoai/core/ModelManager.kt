@@ -80,6 +80,7 @@ object ModelManager {
 
     @SuppressLint("HardwareIds")
     @Synchronized
+    @JvmStatic
     fun init(context: Context) {
         if (initialized) return
         // ★ v0.1.0-beta7（独立 Activity 架构）：
@@ -117,6 +118,7 @@ object ModelManager {
     val recentDialogs = java.util.Collections.synchronizedList(ArrayDeque<DialogRecord>())
 
     /** 确保已初始化（Hook 侧拿到的 Context 可能是 App 的，也可能是模块的） */
+    @JvmStatic
     fun ensureInit(context: Context) {
         if (!initialized) init(context)
     }
@@ -245,6 +247,7 @@ object ModelManager {
 
     fun dialogs(): List<DialogRecord> = synchronized(recentDialogs) { recentDialogs.toList() }
 
+    @JvmStatic
     fun emit(event: ModuleEvent) {
         _events.tryEmit(event)
     }

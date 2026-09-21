@@ -12,7 +12,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.zeroone01.xiaoai.core.ModelManager
 import com.zeroone01.xiaoai.core.XLog
-import com.zeroone01.xiaoai.ui.SettingsWindowController
 import java.lang.ref.WeakReference
 import java.util.Collections
 
@@ -51,6 +50,7 @@ internal object SettingsPageInjector {
 
     // ==================================================================
 
+    @JvmStatic
     fun install(module: ModuleBridge, loader: ClassLoader, app: Context) {
         hookSettingActivity(module, loader)
         XLog.i("已安装「设置」页面注入器（目标: $SETTING_ACTIVITY）")
@@ -264,11 +264,6 @@ internal object SettingsPageInjector {
             XLog.i("已跳转到模块独立设置 Activity（模块进程）")
         }.onFailure {
             XLog.e("启动设置 Activity 失败", it)
-            runCatching {
-                if (!ModelManager.isInitialized) ModelManager.init(activity)
-                ModelManager.emit(com.zeroone01.xiaoai.core.ModuleEvent.Log("fallback overlay"))
-                XLog.i("已回退到进程内覆盖层设置窗口")
-            }.onFailure { e -> XLog.e("覆盖层也失败", e) }
         }
     }
 }

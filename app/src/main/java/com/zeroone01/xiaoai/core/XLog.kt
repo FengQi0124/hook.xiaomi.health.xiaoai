@@ -95,6 +95,7 @@ object XLog {
      * 这样 Hook 进程也能把日志写到 /data/data/com.zeroone01.xiaoai/files/，
      * UI 进程读同一路径即可。
      */
+    @JvmStatic
     fun init(context: Context) {
         try {
             appContext = context.applicationContext ?: context
@@ -117,9 +118,20 @@ object XLog {
         }
     }
 
+    @JvmStatic
+    fun isInitialized(): Boolean = logFile != null
+
+    @JvmStatic
     fun d(message: String) = log("D", message, null, verbose)
+
+    @JvmStatic
     fun i(message: String) = log("I", message, null, true)
+
+    @JvmStatic
     fun w(message: String) = log("W", message, null, true)
+
+    @JvmStatic
+    @JvmOverloads
     fun e(message: String, t: Throwable? = null) = log("E", message, t, true)
 
     /** 对齐 ModuleBridge.log(priority, tag, message) 签名的 log 入口 */
