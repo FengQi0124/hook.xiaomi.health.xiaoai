@@ -1,8 +1,9 @@
+id=com.zeroone01.xiaoai
 name=手环小爱 AI 增强
-version=0.1.0-beta16
-versionCode=16
+version=0.6.0-beta1
+versionCode=600
 author=ZeroOne01
-description=把小米运动健康里手环/手表的小爱同学接入第三方 AI（DeepSeek / 智谱 / OpenAI 兼容），可在手环上语音切换模型。作用域仅限小米运动健康，与手机版小爱同学无关。
+description=把小米运动健康里手环/手表的小爱同学接入第三方 AI（DeepSeek / 智谱 / 通义千问 / Kimi 等 OpenAI 兼容），可在手环上语音切换模型，智能家居指令原样直通。0.5.0 起基于 mi-band-ai（环上LLM）工程重构。
 
 # ── libxposed 现代 API 声明 ─────────────────────────────────────────────
 # 缺了这两行，LSPosed 会直接忽略本模块（表现为：模块能勾选，但 App 里没入口、

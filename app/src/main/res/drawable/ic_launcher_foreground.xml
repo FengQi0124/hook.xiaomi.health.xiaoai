@@ -1,9 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用图标前景（0.5.1-beta1 自绘 B 方案）：运动手表 + AI 火花。
+  视口 108x108（自适应图标标准），内容全部落在中心 66x66 安全区内。
+  构成：竖向表带（白 85%）+ 白色圆形表盘 + 表盘中心的蓝色四角 AI 火花。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#FF8C3A"
-        android:pathData="M54,26c-12.2,0 -22,9.8 -22,22v14c0,1.7 1.3,3 3,3h4v-17c0,-8.3 6.7,-15 15,-15s15,6.7 15,15v17h4c1.7,0 3,-1.3 3,-3V48C76,35.8 66.2,26 54,26z" />
-    <path android:fillColor="#FFFFFFFF"
-        android:pathData="M43,56h6v20h-6z M59,56h6v20h-6z" />
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 表带（竖向胶囊，上下露出表盘；y 22~86 落在中心 66dp 安全区内） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.85"
+        android:pathData="M45,31 A9,9 0 0 1 63,31 V77 A9,9 0 0 1 45,77 Z" />
+
+    <!-- 圆形表盘 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,54 a24,24 0 1 0 48,0 a24,24 0 1 0 -48,0 z" />
+
+    <!-- 表盘中心：四角 AI 火花 -->
+    <path
+        android:fillColor="#3651E8"
+        android:pathData="M54,40 L57.4,50.6 L68,54 L57.4,57.4 L54,68 L50.6,57.4 L40,54 L50.6,50.6 Z" />
 </vector>

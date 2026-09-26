@@ -1,28 +1,26 @@
+// 手环小爱 AI 增强 —— LSPosed 模块工程
+// 插件与依赖仓库统一在此声明
 pluginManagement {
     repositories {
-        // 国内镜像优先，保证无外网环境下也能构建
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/") }
-        google()
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
         mavenCentral()
         gradlePluginPortal()
     }
 }
 
 dependencyResolutionManagement {
-    // 用 PREFER_PROJECT 而不是 FAIL_ON_PROJECT_REPOS：
-    // 方便在国内 CI / 本地通过 init 脚本或环境变量注入镜像仓库。
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/") }
         google()
         mavenCentral()
     }
 }
 
-rootProject.name = "XiaoAiAssistant"
+rootProject.name = "hook.xiaomi.health.xiaoai"
 include(":app")

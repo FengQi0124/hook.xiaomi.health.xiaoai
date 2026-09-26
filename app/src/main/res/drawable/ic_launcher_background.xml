@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用图标背景（0.5.1-beta1 自绘 B 方案）：青 → 蓝斜向渐变 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="45"
+        android:startColor="#0E9F8E"
+        android:endColor="#2B6CB8"
+        android:type="linear" />
+    <corners android:radius="0dp" />
+</shape>

@@ -1,40 +1,36 @@
-import java.util.Properties
+import java.time.LocalDate
 
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.androidApplication)
+    // AGP 9.0+ 内置 Kotlin 支持，不再需要 kotlinAndroid 插件
+    alias(libs.plugins.composeCompiler)
+    alias(libs.plugins.kotlinSerialization)
 }
 
-// 从 local.properties 读取 SDK 路径（本地构建）或用环境变量（CI 构建）
-val localProps = Properties().apply {
-    val f = rootProject.file("local.properties")
-    if (f.exists()) f.inputStream().use { load(it) }
-}
-
+// 手环小爱 AI 增强 —— LSPosed 模块（Modern Xposed API 102）
+// 0.5.0-beta 起：基于 mi-band-ai（环上LLM）工程重构，身份（包名/签名/版本）换成用户的。
 android {
     namespace = "com.zeroone01.xiaoai"
-    compileSdk = 35
-
-    defaultConfig {
-        applicationId = "com.zeroone01.xiaoai"
-        minSdk = 24
-        targetSdk = 35
-        versionCode = 16
-        versionName = "0.1.0-beta16"
-
-        ndk {
-            abiFilters += setOf("arm64-v8a", "x86_64")
+    // AGP 9.x 的 compileSdk 表达式 DSL。
+    // libxposed 102 要求 compileSdk>=37，使用子系统 37.0（platforms/android-37.0）
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
         }
     }
 
-    ndkVersion = "27.0.12077973"
-    buildToolsVersion = "36.0.0"
-
-    externalNativeBuild {
-        cmake {
-            path = file("cpp/CMakeLists.txt")
-            version = "3.28.3"
-        }
+    defaultConfig {
+        applicationId = "com.zeroone01.xiaoai"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 600
+        versionName = "0.6.0-beta1"
+        // 编译日期（首页「关于」展示）：随构建日期生成
+        buildConfigField(
+            "String",
+            "BUILD_TIME",
+            "\"${LocalDate.now()}\"",
+        )
     }
 
     signingConfigs {
@@ -48,12 +44,19 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 现代 Xposed API 模块建议开启混淆以隐藏实现细节
+            // （proguard-rules.pro 保留 Xposed 入口 / Miuix / serialization）
+            isMinifyEnabled = true
             isShrinkResources = false
+            // 用户专属签名（xiaoai.jks，从 0.x 旧工程沿用）
             signingConfig = signingConfigs.getByName("xiaoai")
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
         debug {
+            isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("xiaoai")
         }
     }
@@ -63,44 +66,33 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlin {
-        compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-        }
-    }
-
     buildFeatures {
+        compose = true
         buildConfig = true
-    }
-
-    packaging {
-        resources {
-            excludes += setOf(
-                "/META-INF/{AL2.0,LGPL2.1}",
-                "META-INF/DEPENDENCIES",
-                "META-INF/LICENSE*",
-                "META-INF/NOTICE*",
-                "DebugProbesKt.bin",
-            )
-        }
-    }
-
-    lint {
-        abortOnError = false
-        checkReleaseBuilds = false
     }
 }
 
 dependencies {
-    compileOnly(libs.xposed.api)
+    // ---- Modern Xposed API 102 ----
+    // compileOnly：仅参与编译，不打包进 APK（由宿主框架提供）
+    compileOnly(libs.libxposed.api)
+    // implementation：打包进 APK，提供与框架通信的 service
+    implementation(libs.libxposed.service)
 
-    implementation(libs.core.ktx)
-    implementation(libs.activity)
-    implementation(libs.activity.ktx)
-    implementation(libs.lifecycle.runtime.ktx)
-    implementation(libs.datastore.preferences)
+    // ---- Miuix（HyperOS 设计语言）----
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.preference)
+    implementation(libs.miuix.icons)
+    implementation(libs.miuix.blur)
 
-    implementation(libs.okhttp)
+    // ---- AndroidX Activity + Compose ----
+    implementation(libs.androidx.activity.compose)
+
+    // ---- Compose（显式声明，与 Miuix 同源同版本，避免冲突）----
+    implementation(libs.compose.runtime)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.ui)
+
+    // ---- Kotlin 序列化（用于解析/构造 WebSocket JSON 消息）----
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.kotlinx.coroutines.android)
 }

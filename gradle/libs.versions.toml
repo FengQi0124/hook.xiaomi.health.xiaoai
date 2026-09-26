@@ -1,43 +1,44 @@
+# 版本目录（Version Catalog）
+# 版本组合参考自 Miuix 0.9.4-rc01 官方构建配置（compose-miuix-ui/miuix 仓库 gradle/libs.versions.toml）
+# Miuix 0.9.4-rc01 由 Kotlin 2.4.x + Compose Multiplatform 1.12.x 构建，消费端需使用同代 Kotlin 以避免元数据版本不兼容
+
 [versions]
-# --- 构建工具链 ---
-agp = "9.1.0"
-kotlin = "2.0.21"
-ksp = "2.0.21-1.0.28"
-
-# --- UI ---
-lifecycle = "2.8.7"
-activityVersion = "1.9.3"
-coreKtx = "1.13.1"
-
-# --- 网络 / 序列化 / 协程 ---
-okhttp = "4.12.0"
-serialization = "1.7.3"
-coroutines = "1.9.0"
-
-# --- 存储 ---
-datastore = "1.1.1"
-
-# --- Xposed ---
-# libxposed 现代 API。LSPosed 从 1.9.0 起不再加载 legacy（de.robv.android.xposed）模块，
-# 必须使用 io.github.libxposed:api。102 对应 LSPosed >= 1.10（模块列表显示 "API 102"）。
-xposedApi = "102.0.0"
+agp = "9.3.1"
+kotlin = "2.4.10"
+composeMultiplatform = "1.12.0-rc01"
+kotlinxSerialization = "1.7.0"
+androidxActivity = "1.13.0"
+libxposed = "102.0.0"
+miuix = "0.9.4-rc01"
 
 [libraries]
-# AndroidX
-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
-activity = { module = "androidx.activity:activity", version.ref = "activityVersion" }
-activity-ktx = { module = "androidx.activity:activity-ktx", version.ref = "activityVersion" }
-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+# ---- 构建工具（根工程声明）----
+android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
+kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
 
-# 网络与序列化
-okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
-kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
-kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+# ---- Modern Xposed API 102 ----
+libxposed-api = { module = "io.github.libxposed:api", version.ref = "libxposed" }
+libxposed-service = { module = "io.github.libxposed:service", version.ref = "libxposed" }
 
-# Xposed（现代 API，来自 Maven Central）
-xposed-api = { module = "io.github.libxposed:api", version.ref = "xposedApi" }
+# ---- Miuix（小米 HyperOS 设计语言，Compose Multiplatform）----
+miuix-ui = { module = "top.yukonga.miuix.kmp:miuix-ui-android", version.ref = "miuix" }
+miuix-preference = { module = "top.yukonga.miuix.kmp:miuix-preference-android", version.ref = "miuix" }
+miuix-icons = { module = "top.yukonga.miuix.kmp:miuix-icons-android", version.ref = "miuix" }
+miuix-blur = { module = "top.yukonga.miuix.kmp:miuix-blur-android", version.ref = "miuix" }
+
+# ---- Compose（与 Miuix 同源使用 JetBrains Compose Multiplatform 制品，Android 目标实际提供 androidx.compose.* 类）----
+compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
+compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "composeMultiplatform" }
+compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
+
+# ---- AndroidX ----
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
+
+# ---- Kotlin 序列化 ----
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 
 [plugins]
-android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

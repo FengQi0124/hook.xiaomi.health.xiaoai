@@ -1,398 +1,219 @@
-# XiaoAi Hijack — 小米运动健康 AI 助手接管模块
+# 手环小爱 AI 增强（hook.xiaomi.health.xiaoai）
 
-一个 **LSPosed / Xposed** 模块，用于在 **小米运动健康** App 内部接管小爱同学语音助手的问答链路，
-把"小爱同学"的回答替换为任意 **OpenAI 兼容** 大模型的回答，并支持通过**手环语音**切换模型。
+一个 **LSPosed / Xposed** 模块（libxposed 现代 API 102），注入**小米运动健康**（`com.mi.health`）进程内，拦截小爱同学的语音问答链路，把环上显示的回答替换为**任意大模型**的回复；支持多模型管理、手环语音切换模型、智能家居指令直通。
 
-本模块是 [`xiaoai_hijack.py`](https://github.com/FengQi0124/xiaoai)（mitmproxy 中间人脚本）的**纯客户端实现**，
-不需要 Root 证书、不需要代理、不需要抓包 —— 全部逻辑在 AIVS SDK 的 Java 层就地完成。
+当前版本：**v0.6.0-beta1**（versionCode 600，包名 `com.zeroone01.xiaoai`）
+仓库地址：<https://github.com/FengQi0124/hook.xiaomi.health.xiaoai>
 
----
-
-## v0.1.0-beta6 修复清单（2026-09-20）
-
-针对 beta5 用户反馈的 6 个问题，全部修复：
-
-| # | 问题 | 修复 |
-|---|---|---|
-| 1 | 手环说「切换模型」没显示 / 手环上没有切换模型文字 | 重写 `DexClassScanner.resolveApkPaths`，同时读 `Element.path`（现代 Android ART 懒加载导致 `dexFile.getName()` 返回 null）+ 用 `HostEnv.hostApkPath/splitSourceDirs`（`XposedModule` framework 直接给的）兜底；新增 `Message.getPayload()` 通用分发钩子，避开 dispatch 候选解析失败的 case；`hookDispatchMethods` 排除 `findClass`（之前误挂到 `AIApiNameMapping` 链路断裂）。 |
-| 2 | 选择模型是开关、不要下拉菜单 | `ProviderTypeSelector` 重写为「点击当前类型行展开 → 列出所有候选 → 点「选择」按钮」的 radio list 形态（无 Popup 依赖，避开宿主 Resources 异常）。 |
-| 3 | 预设了几行没填 API 的空配置 | `AiConfig.defaultProviders()` 只返回 XIAOAI 一行；`FileConfigStore.loadFromDisk()` 过滤 `key startsWith("preset-") && apiKey/baseUrl/model 全空` 的残留行（兼容从 beta5 升上来的 JSON）。 |
-| 4 | 点 TextField 直接崩回主页 | `createPackageContext("com.zeroone01.xiaoai")` 在 Android 11+ 上因 `<queries>` 未声明而失败（旧版 fallback 到宿主 Resources → Compose `PopupLayout.createLayoutParams` 找 `R.string.popup_window_title` 找不到 → `Resources$NotFoundException: String resource ID #0x7f0a000e`）；新版 `HostEnv.buildModuleContext` 用 `XposedModule.moduleApplicationInfo` + `PackageManager.getResourcesForApplication(ApplicationInfo)`（公开 API，绕过包可见性）拿模块真正的 Resources，`ContextWrapper` 替换 `getResources/getAssets/getPackageName`。 |
-| 5 | 诊断页 back 直接退到「我的」 | 旧 `OnBackPressedDispatcher` 永远 `dismiss()`；新方案把 `showDiag` 提到 `SettingsContent` 内用 `DisposableEffect` 注入 `navStateProvider` / `hideDiagnosticsRequested` 到 controller，back 在诊断子页时通知 Compose 把 `showDiag` 设回 false（回主设置页）而不是关闭整个窗口。 |
-| 6 | 没推到 GitHub | 已在本地 commit（`8c4eb0b`），等代理修复后 push。 |
+> 0.5.0-beta 起，本工程基于 `mi-band-ai`（环上 LLM，`llm.miband.littlewhite`）整体重构，沿用其 Hook 链路与设置页骨架，新增多模型切换菜单、提供方预设、语音切换模型、智能家居指令直通。0.5.1-beta1 起新增自绘应用图标（运动手表 + AI 火花，自适应图标），并移除「我的」页入口注入、「启用模块」开关与预测性返回开关。0.6.0-beta1 起配置页按功能重新分栏（模型列表 / 其它 / 配置），并删除两条「模式持续时长」设置。
 
 ---
 
-## 一、原理与关键 Hook 点分析
-
-### 1.1 原脚本为什么能work
-
-`xiaoai_hijack.py` 之所以能劫持成功，是因为它把 WebSocket 上的 JSON 包**截停、改写、再放行**。
-链路上真正承载"用户说了什么"和"AI 回了什么"的只有两处：
-
-| 方向 | namespace | name | 关键字段 |
-|---|---|---|---|
-| App → 云 | `SpeechRecognizer` | `RecognizeResult` | `is_final`、`results[0].origin_text` |
-| 云 → App | `Template` | `Toast` | `text`、`query`、`disclaimer` |
-
-脚本的核心时序等价于：
+## 一、它是怎么工作的
 
 ```
-RecognizeResult(is_final=true)  ──► 记住 origin_text, dialog_id
-                 ...（云端思考，可能要等几秒）...
-Template.Toast                  ──► 用之前记住的 query 去问第三方 AI
-                                    把 payload.text 换成 AI 的回复
-                                    放行 → App 原样渲染，UI/播报/TTS 全部走原流程
+手环上喊「小爱同学」
+   └─► 小米运动健康 App 建立 AIVS WebSocket，云端下行 JSON 报文
+         └─► 本模块在 Java 字符串层拦截（不碰密文、不碰证书）
+               ├─ 上行 RecognizeResult(is_final)  → 捕获「你的问题」（按 dialog_id 暂存）
+               └─ 下行 Template/Toast             → 拿暂存的问题去问大模型
+                     └─► 改写 payload.text → chain.proceed(newArgs) 放行
+                           └─► 手环上显示的是大模型的回答，TTS / 历史记录照常
 ```
 
-**这里最关键的一点：脚本是在"转发前"修改 body，然后让原流程继续。**
-App 侧完全不知道内容被换过 —— 播报、历史记录、卡片渲染全都正常。
+- **三道 Hook 互为兜底**（任一命中即可工作）：
 
-### 1.2 迁移到 Xposed 的映射关系
+  | 层 | Hook 点 | 说明 |
+  |---|---|---|
+  | ① 主层 | `defpackage.oav#onMessage(WebSocket, String)` | 宿主自封装的 WebSocket 回调（最常见路径） |
+  | ② 兜底 | `okhttp3.internal.ws.RealWebSocket#onReadMessage(String)` | okhttp 原生 WebSocket |
+  | ③ 稳定 | `com.xiaomi.ai.api.common.APIUtils#readInstruction(String)` | AIVS 指令解析入口，类名未混淆 |
 
-AIVS SDK 在 Java 层是这样流转的（配合 `libaivs_jni.so`）：
-
-```
-native 收包
-   └─► 在 Java 堆上构造 Message 对象（header 已填 namespace/name，payload 已反序列化）
-         └─► dispatch(Message msg)          ← 多态分发方法，参数类型是 Message 或其子类
-               └─► 各业务 Listener 消费 payload
-```
-
-所以 **只要在 dispatch 之前就地改写 payload 字段，效果和改 WebSocket body 完全等价**，
-而且比改返回值更安全（返回值可能被 JNI 层直接忽略）。
-
-挂载点一共 4 个，按重要性排序：
-
-#### ① 消息分发方法（主战场）
-
-```kotlin
-// 不写死方法名/类名，用「参数类型是 Message 子类 + 参数个数 1~3」做指纹扫描
-val dispatchCandidates = messageClass.subclasses
-    .flatMap { it.declaredMethods }
-    .filter { m -> m.parameterTypes.any { messageClass.isAssignableFrom(it) } }
-```
-
-命中的典型形态：
-- `void onEvent(Event event)`
-- `void onMessage(Message msg, Connection conn)`
-- `void dispatch(Object o, int flag)`
-
-**Hook 时机选 `beforeHookedMethod`** —— 我们要在业务层读到对象*之前*把字段改掉。
-
-#### ② `Template.Toast.setText(String)` / `ToastStream.setMarkdownText(String)`
-
-兜底方案。如果 ① 因为混淆或签名变化没命中，直接改 Setter 入参也能生效：
-
-```kotlin
-XposedBridge.hookAllMethods(toastClass, "setText") { param ->
-    param.args[0] = rewrittenText
-}
-```
-
-**注意**：必须**同时改字段和 Setter**，因为 JNI 层可能直接反射写字段，绕过 Setter。
-
-#### ③ `ApiNameMapping.findClass(String namespace, String name)`
-
-AIVS 用它把 `"Template.Toast"` 映射成具体 Class。Hook 它可以**无损拿到全部类映射表**，
-是解决混淆最优雅的手段 —— 拿到映射后所有候选类直接从注册表里查，不用再猜类名。
-
-#### ④ `Activity.onResume`（仅用于注入 UI 入口）
-
-"我的"页面是原生 View（不是 Compose），所以用 `decorView` 树遍历找锚点文本，
-在两个锚点之间 `addView` 插入入口。
-
-### 1.3 三个必须解决的技术难点
-
-#### 难点 1：类名全混淆，字段名不混淆 → 用字段指纹
-
-`libaivs_jni.so` 要把 JSON key 映射到 Java 字段，所以 **JSON 里的 key 名 = Java 字段名**：
-
-```java
-class a.b.c {                      // 类名混淆成 a.b.c
-    String origin_text;            // 字段名保留！
-    boolean is_final;
-    String markdown_text;
-}
-```
-
-于是类发现策略变成：
-
-```kotlin
-// 一级：候选 FQN（含历史版本号变量）
-val candidates = listOf(
-    "com.xiaomi.ai.api.SpeechRecognizer\$RecognizeResult",
-    "com.xiaomi.ai.api.Template\$Toast",
-    ...
-)
-// 二级：字段指纹兜底 —— 找不到就全 DEX 扫描，找含这些字段名的类
-val cls = Reflector.findClassByFields(listOf("origin_text", "is_final"))
-```
-
-`DexClassScanner` 是一个**手写的最小 DEX 解析器**（只读 `string_ids` 段，不引第三方库），
-用来在运行时枚举 APK 里所有类名，配合字段过滤锁定目标。
-
-#### 难点 2：Native 回调线程上做网络请求 → 用阻塞等待
-
-这是整个项目最核心的设计。`Template.Toast` 的回调跑在 **native 回调线程 / HandlerThread**，
-**不是主线程** —— 所以我们可以放心阻塞它，等价于 mitmproxy 的"暂停转发"：
-
-```kotlin
-val latch = CountDownLatch(1)
-val holder = AtomicReference<String?>(null)
-
-// 异步发起请求，不阻塞
-scope.launch(Dispatchers.IO) {
-    when (val r = AiClient.chat(...)) {
-        is ChatResult.Success -> holder.set(r.text)
-        is ChatResult.Failure -> XLog.w("失败，放行原回复：${r.reason}")
-    }
-    latch.countDown()
-}
-
-// 在 native 线程上等，最多 timeoutMs + 500，硬上限 10s
-val ok = latch.await((timeoutMs + 500L).coerceAtMost(10_000L), TimeUnit.MILLISECONDS)
-val reply = holder.get()
-if (ok && !reply.isNullOrBlank()) rewrite(reply)   // 替换
-else { /* 超时/失败 → 什么都不做，原回复照常下发 */ }
-```
-
-**三重保险防 ANR**：
-1. `isMainThread()` 检查 —— 万一回调真在主线程，直接**跳过替换**，绝不冒 ANR 风险；
-2. `callTimeout` 限制 OkHttp 单次请求上限；
-3. `latch.await()` 硬超时，超时即放行原始回复，用户最多感觉"小爱回慢了一点"，不会卡死。
-
-#### 难点 3：RecognizeResult 决定、Toast 才能写 → ThreadLocal 暂存
-
-有个时序陷阱：
-- `RecognizeResult` 阶段**必须**判断"这句话是不是语音指令"（比如"切换模型"），
-  因为如果是指令，我们要**拦截它、返回菜单，且不能让云端真去回答**；
-- 但那时**还没有 Toast 对象**，没法写回复。
-
-解法是 ThreadLocal 暂存直通文本：
-
-```kotlin
-// RecognizeResult 阶段
-engine.onRecognizeResult(msg)?.let { directText -> stashDirectText(directText) }
-// 同一个线程稍后到 Toast 阶段
-val pending = takeDirectText()   // 取到菜单文本
-if (pending != null) rewrite(pending)   // 直接写入，不发网络请求
-else { /* 走正常 AI 替换流程 */ }
-```
-
-### 1.4 安全退出策略
-
-以下任意情况**立即放行原生回复**，模块对用户完全透明：
-
-| 情况 | 行为 |
-|---|---|
-| `is_final == false`（中间结果） | 忽略，不记录 |
-| 当前模型 = 小爱同学 | 完全不干预 |
-| 当前模型 = 第三方但未填 API Key | 放行，并 Toast 提示去配置 |
-| 网络失败 / 非 2xx | 放行 |
-| 超时（默认 8s） | 放行 |
-| 回调在主线程 | 放行 |
-| 类解析失败 | 模块整体不接管 |
+- **安全兜底**：任何异常、超时、非 2xx、空回复、主线程命中一律**放行原回答**，绝不干扰宿主（`ExceptionMode.PROTECTIVE`）；AI 等待上限 15s，日志自动脱敏（`sk-` 密钥、Authorization/Bearer 头）。
+- **无代理、无证书、无后台服务**：替代了原 Termux + mitmproxy 方案（[`example/xiaoai.py`](example/xiaoai.py) 仅作留存参考），全部逻辑在宿主 App 内就地完成。
 
 ---
 
 ## 二、功能特性
 
-- ✅ **模型选择**：小爱同学 / DeepSeek / 智谱 / 自定义（OpenAI 兼容）
-- ✅ **预设厂商**：只需填 API Key，Base URL 已内置
-- ✅ **自定义厂商**：Base URL + API Key + 模型名 全手填
-- ✅ **流式支持**：解析 SSE，可选只取最终文本
-- ✅ **手环语音切换模型**：说"切换模型" → 返回数字菜单 → 说 "1/2/3/4" 切换
-- ✅ **多轮对话**：可开关，保留最近 N 轮上下文
-- ✅ **超时兜底**：默认 8 秒，可调，超时自动放行
-- ✅ **实时诊断页**：看日志、看最近对话、看替换是否成功
-- ✅ **"我的"页面注入入口**：在"我的路线库"和"App设置"之间插入"AI 助手设置"
-- ✅ **HyperOS 风格 UI**：基于 Miuix（Compose Multiplatform）
+### 回答来源
+
+- **外部 LLM**（默认 DeepSeek）：OpenAI 兼容双路由（OpenAI / Anthropic），支持 DeepSeek 思考模式 `reasoning_content` 提取；
+- ~~手机端小爱 · miclaw / fast~~ —— 0.5.0-beta 起「用手端小爱回答」开关已下线（`getUsePhoneXiaoai` 强制 false），仅保留代码链路。
+
+### 多模型（0.5.0-beta 核心）
+
+- 「模型列表」分组第 1 行固定**小爱同学**（不可编辑/删除），第 2 行起用户模型行尾有一个「**三横**」手柄：**点按**该行**行内展开精简编辑界面**（只露 **Base URL / 模型名 / API Key** 三栏 + **删除 · 取消 · 保存**，带展开-收起动画，整块只有三行输入框高、不弹任何浮层，再点一次收起），**长按 0.5 秒**进入排序态（横线变主题色 + 震动反馈），行变成圆角主题色卡片、**上下拖动**跟手移动，松手吸附落位并持久化（落位时各行直接停在新槽位，不会先飞离再弹回）；
+- 列表末行是居中的「**+ 添加模型**」（0.6.0-beta1：整行只有「+ 添加模型」并水平居中，`+` 取 Miuix `MiuixIcons.Add`，点按打开添加对话框）；
+- **行点击即激活**：小爱行 → `active_model=xiaoai` + `default_mode=xiaoai`；模型行 → `active_model=<id>` + `default_mode=llm`；
+- 「添加/编辑」对话框内置常见提供方**预设 chips**（DeepSeek / 通义千问 / 智谱 / 硅基流动 / 火山方舟 / 讯飞星火 / Kimi / OpenAI / Gemini / OpenRouter），选中自动填 Base URL 与默认模型，只需填 API Key；
+- API Key 落盘加密（`ApiKeyCipher` XOR + Base64），进程内明文；
+- 紧随其后的「**其它**」分组里「**测试模型可用性**」：用当前激活模型请求一次，验证连接与 Key；
+- 首次进入若无激活条目，自动用 legacy API 字段播种一条完成迁移。
+
+### 语音与交互
+
+- **手环语音切换模型**：说「换模型」→ 手环弹出编号菜单（30 秒有效）→ 说序号 / 中文数字 / 模型名切换；
+- **智能家居指令直通**：命中 `SmartHomeRules` 词表（场景词 / 数值调节 / 动作+设备名词）时不调 LLM，直接交小爱原生执行；
+- **打开设置页**：只走**桌面图标**（0.5.1-beta1 起「我的」页入口注入已整体移除，宿主内不再显示任何入口）。
+
+### 设置页（Miuix / HyperOS 设计语言）
+
+- **3-Tab**：`首页` / `配置` / `记录`（悬浮胶囊底部栏可选，或经典 NavigationBar）；
+- 首页：工作状态卡（点击打开 LSPosed 管理器）→ 关于 → 快速操作 → 目标应用 → 日志导出；
+- 配置：**模型列表**（小爱同学 → 居中的「+ 添加模型」）→ **其它**（测试模型可用性 / 智能家居指令直通）→ **配置**（切换模型提示词 / 系统提示词，0.6.0-beta1 由原「回答模式」栏改名并把系统提示词从「生成参数」移入；原「小爱模式持续时长」「LLM 模式持续时长」两条输入框已删除）→ 生成参数（超时 / 最大 Token）→ 会话设置；
+- 记录：API 调用次数 / token 用量 / 柱状图 / 最近调用，可刷新与清除；
+- 主题页：跟随系统 / 浅色 / 深色 + 毛玻璃、悬浮栏玻璃效果、页面缩放（0.5.1-beta1 起「预测性返回」开关已删除，返回手势走系统默认行为）。
 
 ---
 
-## 三、项目结构
+## 三、安装与使用
+
+### 3.1 环境要求
+
+- Android 8.0+（minSdk 26，targetSdk 35）
+- **LSPosed**（API 102，即 LSPosed ≥ 1.10）
+- 作用域：`com.mi.health`（另声明 `com.xiaomi.wearable` / `com.xiaomi.hm.health` / `com.miui.voiceassist`）
+
+### 3.2 安装步骤
+
+1. 安装模块 APK（签名：`app/xiaoai.jks`）；
+2. LSPosed 管理器启用模块，作用域勾选**小米运动健康**；
+3. **强制停止**小米运动健康（必须，否则 Hook 不生效）；
+4. 打开设置页：**桌面图标**（唯一入口）；
+5. 「模型列表」分组里选/加一个模型，填 API Key → 点「其它」分组里的「测试模型可用性」验证。
+
+### 3.3 手环语音切换模型
 
 ```
-xiaoai/
-├── settings.gradle.kts              # 镜像仓库配置（阿里云 + 腾讯云）
-├── build.gradle.kts                 # 根构建脚本
-├── gradle.properties
-├── gradle/
-│   └── libs.versions.toml           # 版本目录
-└── app/
-    ├── build.gradle.kts             # 模块构建（含签名配置）
-    ├── xiaoai.jks                   # 签名密钥
-    ├── proguard-rules.pro
-    └── src/main/
-        ├── AndroidManifest.xml
-        ├── resources/META-INF/xposed/   # ★ 必须在 resources，Gradle 才会打进 APK 根目录
-        │   ├── module.prop              #   minApiVersion / targetApiVersion 为必填
-        │   ├── java_init.list           #   入口类全限定名
-        │   └── scope.list               #   作用域包名
-        ├── res/                     # 图标 / 主题 / 字符串
-        └── java/com/zeroone01/xiaoai/
-            ├── XiaoAiApplication.kt
-            ├── core/
-            │   ├── XLog.kt              # 日志门面（环形缓冲 + logcat）
-            │   ├── ModelId.kt           # 模型枚举 + 菜单序号
-            │   ├── AiConfig.kt          # 配置数据类
-            │   ├── ConfigStore.kt       # 存储接口
-            │   ├── FileConfigStore.kt   # JSON 文件存储（跨进程）
-            │   ├── HostEnv.kt           # 模块 / 宿主的 ApplicationInfo/APK 路径缓存
-            │   └── ModelManager.kt      # 全局单例（StateFlow）
-            ├── net/
-            │   └── AiClient.kt          # OpenAI 兼容客户端（SSE 流式）
-            ├── hook/
-            │   ├── Reflect.kt           # 自研反射工具（替代已移除的 XposedHelpers）
-            │   ├── HookCompat.kt        # API 102 拦截器链 → before/after 适配层
-            │   ├── Reflector.kt         # 业务用反射工具（Optional 解包）
-            │   ├── DexClassScanner.kt   # 手写 DEX 字符串扫描器
-            │   ├── AivsModel.kt         # AIVS 类/字段解析
-            │   ├── VoiceCommandHandler.kt # 语音指令状态机
-            │   ├── InterceptEngine.kt   # 拦截核心（阻塞等待 + 替换）
-            │   ├── SettingsPageInjector.kt # 「设置」页入口注入
-            │   └── XiaoAiHookEntry.kt   # 主入口（XposedModule）+ ApiRegistry
-            └── ui/
-                ├── SettingsActivity.kt  # 设置页容器
-                ├── SettingsScreen.kt    # Miuix 设置界面
-                ├── DiagnosticsScreen.kt # 诊断/日志页
-                └── LauncherProxyActivity.kt # 透明启动代理
-```
-
----
-
-## 四、安装与使用
-
-### 4.1 环境要求
-
-- Android 7.0+（`minSdk 24`）
-- 已安装 **LSPosed**（推荐）或 EdXposed
-- 小米运动健康 App（`com.xiaomi.wearable` / `com.xiaomi.hm.health`）
-
-### 4.2 安装步骤
-
-1. 安装本模块 APK
-2. 在 LSPosed 管理器中**启用模块**，作用域勾选 **小米运动健康**
-3. **强制停止**小米运动健康（必须，否则 Hook 不生效）
-4. 重新打开 App → 「我的」→ 找到「**AI 助手设置**」入口
-5. 填入 API Key，选择模型，保存
-
-### 4.3 手环语音切换
-
-对着手环说：
-
-```
-你：切换模型
+你：换模型
 小爱：请选择模型
       1.小爱同学
-      2.deepseek
-      3.智谱
-      4.退出
+      2.DeepSeek
+      3.退出
 你：2
 小爱：已切换到 DeepSeek
 ```
 
-选定后，后续所有问答都由对应模型回答。手机上切换模型，手环立即同步（文件 mtime 轮询，1.5s）。
+30 秒不操作自动退出选择模式；设置页写入新激活模型时会清除 hook 进程的运行时覆盖。
 
 ---
 
-## 五、调试方法
+## 四、项目结构
 
-### 5.1 看日志
+```
+hook.xiaomi.health.xiaoai/
+├── app/xiaoai.jks                    # 签名密钥（alias=xiaoai）
+├── app/src/main/
+│   ├── AndroidManifest.xml           # Xposed 声明 + SettingsActivity + StatsContentProvider
+│   ├── resources/META-INF/xposed/    # 三件套：java_init.list / module.prop / scope.list
+│   └── kotlin/com/zeroone01/xiaoai/
+│       ├── MainModule.kt             # XposedModule 入口（按包名分发）
+│       ├── SettingsActivity.kt       # 设置页 Compose Activity
+│       ├── config/                   # ConfigKeys / ConfigStore / ModelEntry / PresetManager
+│       │                             #   StatsContentProvider / StatsStore
+│       ├── hook/
+│       │   ├── LlmClient.kt          # 外部 LLM 客户端（OpenAI/Anthropic 双路由）
+│       │   ├── MiHealthHook.kt       # com.mi.health WebSocket Hook
+│       │   ├── WebSocketInterceptor.kt  # WsMessage + 回答来源回退链
+│       │   ├── SmartHomeRules.kt     # 智能家居直通词表
+│       │   ├── Bridge.kt             # 跨进程 localhost TCP 桥（43997）
+│       │   ├── VoiceAssistHook.kt / XiaoaiAgentServer.kt / XiaoaiAgentClient.kt
+│       │   └── FastXiaoaiEngine.kt   # fast 档（已下线入口，代码留存）
+│       ├── log/LogCollector.kt       # 环形缓冲 + 文件导出，自动脱敏
+│       └── ui/
+│           ├── SettingsScreen.kt     # 主设置页（3-Tab + 模型列表 + 记录页）
+│           ├── ThemeSettingsScreen.kt# 主题设置页（移植 KernelSU）
+│           ├── Theme.kt / VisualPrefs.kt / BlurExt.kt
+│           └── component/FloatingBottomBar.kt  # 悬浮胶囊底部栏（KSU 移植）
+└── docs/                             # 可行性报告 / LSPosed 指南 / 逆向笔记
+```
+
+---
+
+## 五、构建
+
+### 本地构建
+
+本工程使用本机 **Gradle 9.6.1**（Windows，`local.properties` 已配 SDK）：
+
+```powershell
+$env:JAVA_HOME='D:\Apps\build-tools\jdk-21'; $env:ANDROID_HOME='D:\Apps\Android\Sdk'
+& 'D:\Apps\build-tools\gradle-9.6.1\bin\gradle.bat' :app:assembleRelease --no-daemon
+```
+
+### CI 构建（GitHub Actions）
+
+`.github/workflows/build-apk.yml` 在**推送 main 分支**或**打 `v*` 标签**时自动构建：
+
+1. JDK 17 + Android SDK platform 37.0 + Gradle 缓存；
+2. `./gradlew assembleDebug assembleRelease`（`app/xiaoai.jks` 已入库，签名与本地一致）；
+3. Debug / Release APK 上传为 workflow artifact；
+4. **推 `v*` 标签时自动创建 GitHub Release** 并挂上两个 APK。
 
 ```bash
-# 全部模块日志
+git tag v0.6.0-beta1
+git push origin v0.6.0-beta1
+```
+
+- 产物：`app/build/outputs/apk/release/app-release.apk`（R8 混淆 + `app/xiaoai.jks` 签名）
+- 校验：
+
+```powershell
+aapt2 dump badging app-release.apk          # 包名 / 版本 / launcher
+apksigner verify --print-certs app-release.apk
+```
+
+### 技术栈
+
+| 组件 | 版本 |
+|---|---|
+| Gradle / AGP / Kotlin | 9.6.1 / 9.3.1 / 2.4.10 |
+| Xposed API | 102（libxposed 现代 API） |
+| Compose Multiplatform | 1.12.0-rc01 |
+| [Miuix](https://github.com/compose-miuix-ui/miuix) | 0.9.4-rc01（UI，MIT） |
+| androidx.activity-compose | 1.13.0 |
+| kotlinx-serialization | 1.7.0 |
+| HTTP | `java.net.HttpURLConnection`（刻意不引入 OkHttp，避免与宿主冲突） |
+| compileSdk / minSdk / targetSdk | 37 / 26 / 35 |
+
+---
+
+## 六、调试
+
+```bash
+# 模块日志
 adb logcat -s XiaoAiHijack:V
-
-# 只看错误
-adb logcat -s XiaoAiHijack:E
-
-# 抓 App 启动阶段的 Hook 安装过程
-adb logcat -s XiaoAiHijack:V | grep -E "已挂载|解析|候选"
 ```
 
-### 5.2 验证 Hook 是否生效
-
-启动 App 后，日志里应该出现：
-
-```
-I/XiaoAiHijack: 开始安装 Hook，classLoader=...
-I/XiaoAiHijack: 解析 AIVS 模型：Message=ok EventHeader=ok ... 
-I/XiaoAiHijack: 已挂载分发方法: xxx.onEvent(Event)  [共 N 个]
-I/XiaoAiHijack: ApiNameMapping 已挂载，已注册 M 个接口映射
-I/XiaoAiHijack: MinePageInjector 已挂载
-```
-
-如果出现 `AIVS 模型解析失败`，说明类发现没命中 —— 此时看日志里打印的候选列表，
-把新类名加进 `AivsModel` 的候选 FQN 列表即可。
-
-### 5.3 实时诊断页
-
-设置页底部 →「运行诊断」，可以看：
-- 模块是否初始化、当前模型、配置同步状态
-- **最近对话列表**：每条显示 `✓`（替换成功）/ `·`（放行原始回复）
-- 原始 query ↔ 实际发出的回复
-
-### 5.4 手动触发一次替换
-
-在设置里把超时设为 20s，然后问一个需要思考的复杂问题：
-
-```
-你：用一句话解释什么是量子纠缠
-```
-
-如果 `✓` 出现且播报内容是第三方模型的风格（不带小爱的口癖），就是成功了。
-
-### 5.5 常见问题
+启动后应看到三道字符串层回调挂载完成；问一个复杂问题后应看到 `AI 替换：dialog=... q=...`。
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
-| 找不到设置入口 | Hook 未生效 | 强制停止 App 后重开；确认 LSPosed 作用域已勾选 |
-| 日志显示"类解析失败" | App 版本变化 | 抓 `adb logcat` 里的候选类名，更新 `AivsModel` |
-| 回复没被替换 | 回调在主线程 / 超时 | 看诊断页是 `·` 还是 `✓`；调大超时时间 |
-| 播报的还是小爱 | 模型选的是小爱同学 | 切到第三方模型 |
-| 手环说"切换模型"没反应 | 指令词不匹配 | 设置页可自定义指令词 |
-| 配置改了手环端没同步 | 轮询间隔 | 等 1.5s；或重进设置页 |
+| 回复没被替换 | 超时 / 网络 / 主线程命中 | 看日志是「AI 替换」还是「放行原回答」，按对应行排查 |
+| 找不到设置页入口 | —— | 0.5.1-beta1 起入口只有桌面图标（宿主内不再注入入口） |
+| 某一层「未挂载」 | 宿主版本类名/签名变化 | 另两层仍兜底；抓新 APK 重新定位 |
+| 播报的还是小爱 | 当前模型 = 小爱同学 | 切到第三方模型 |
 
 ---
 
-## 六、构建
+## 七、版本历史
 
-```bash
-./gradlew :app:assembleRelease
-```
+> 每次有**功能改动**都会同步升版本号（`versionName` + `versionCode` + `module.prop` 三处一起改）并打 `v*` 标签走 CI 出包，避免出现「版本号一样、功能不一样」的包。
 
-产物：`app/build/outputs/apk/release/app-release.apk`
-
-已配置签名（`app/xiaoai.jks`），密钥可用于 LSPosed 模块更新校验。
-
-国内网络已配置阿里云 + 腾讯云 Maven 镜像（见 `settings.gradle.kts`）。
-
----
-
-## 七、技术栈
-
-| 组件 | 版本 | 说明 |
-|---|---|---|
-| AGP | 9.1.0 | 内置 Kotlin 支持 |
-| Kotlin | 2.3.20 | |
-| Compose Multiplatform | 1.12.0-rc01 | |
-| Miuix | 0.9.4-rc01 | HyperOS 风格 UI |
-| Xposed API | **102**（libxposed 现代 API） | `compileOnly`，`io.github.libxposed:api` |
-| OkHttp | 4.12.0 | 网络 |
-| kotlinx.serialization | 1.9.0 | JSON |
-| kotlinx.coroutines | 1.10.2 | 异步 |
-| compileSdk | 37.0 | 次版本 SDK |
+- **0.6.0-beta1**（当前，versionCode 600）：配置页按功能重新分栏 —— 「模型列表」（小爱同学 → 居中的「**+ 添加模型**」，Miuix `MiuixIcons.Add` + 只留四个字 + 整行水平居中，原箭头行与长说明删除）、「其它」（测试模型可用性 / 智能家居指令直通）、「**配置**」（原「回答模式」栏改名，**切换模型提示词 + 系统提示词**合并到同一栏，系统提示词从「生成参数」移入）；**删除「小爱模式持续时长」「LLM 模式持续时长」两条输入框**（`ConfigStore` 取值与默认值保留，`ModeState` 仍按默认时长回退）；版本号 `0.5.1-beta1`(501) → **`0.6.0-beta1`(600)**。
+- **0.5.1-beta1**：三横手柄交互重做 —— **点按**改为该行**行内展开精简编辑界面**（`ModelInlineEdit`：Base URL / 模型名 / API Key 三栏 + 删除·取消·保存，带展开-收起动画，只有三行输入框高，不弹浮层、也不必再多点一次「编辑」；上移/下移按钮删除，排序全靠长按拖动），**长按 500ms** 进入排序、拖动行以圆角主题色卡片样式**跟手**移动；修复松手落位后其余行「飞出去又回来」的跳变（重排时位移动画重新开始）；版本号由 `1.0.0`(1000) 改回 `0.5.1-beta1`(501)（该版本号期间存在多份功能不同的构建，故 0.6.0-beta1 起严格按功能升号）。
+- **1.0.0**：自绘应用图标（`mipmap-anydpi-v26` 自适应图标 + `monochrome` 主题图标层，删除原项目 PNG）—— 运动手表造型（竖表带 + 白色圆盘 + 表盘内蓝色 AI 火花，青→蓝渐变底）；模型列表行尾改「三横」手柄，行高与内边距对齐 Miuix 偏好行（16dp 内边距、`headline1`/`body2` 字体，行块自带分隔线）；「智能家居指令直通」开关移入模型分组卡片（原「基本设置」分组删除）；删除「启用模块」开关（`isEnabled()` 恒 true）；删除「我的」页入口注入（`MinePageInjector` 移除，入口只走桌面图标）；删除预测性返回（Manifest `enableOnBackInvokedCallback`、反射兜底、开关、配置键与首页入口副标题全部移除）。
+- **0.5.0-beta**：基于 mi-band-ai 整体重构 —— 多模型菜单 / 提供方预设 / 语音切模型 / 智能家居直通 / 「我的」页入口注入 / 3-Tab 设置页。
+- **第二轮精简**：状态页改名「首页」并删三张信息卡；「关于」Tab 并入首页；删除手端小爱开关、三组旧指令词、思考模式等。
+- **第三轮 UI 反馈修复**：预测性返回（Manifest `enableOnBackInvokedCallback` + 反射兜底）、悬浮栏跳转 bug、删莫奈取色与导航角标、删温度/Top P/Top K、「测试模型可用性」入配置 Tab、「统计」改名「记录」、导出日志移到首页底部、模型列表与状态卡排版重做。
+- **0.2.x 及更早**：字符串层三道 Hook 架构、`xiaoai_hijack.py` mitmproxy 方案（已弃用，见 `example/`）。
 
 ---
 
 ## 八、免责声明
 
-本项目仅供**个人学习与研究**使用，用于理解 Android 逆向工程、Xposed 框架与 AI 语音链路。
-请勿用于商业用途或违反相关服务条款的场景。使用本模块产生的一切后果由使用者自行承担。
-
----
+本项目仅供**个人学习与研究**使用，用于理解 Android 逆向工程、Xposed 框架与 AI 语音链路。请勿用于商业用途或违反相关服务条款的场景。使用本模块产生的一切后果由使用者自行承担。
 
 ## License
 
