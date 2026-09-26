@@ -1,4 +1,4 @@
-# ---- 环上LLM 混淆规则（LSPosed 模块）----
+# ---- LSPosed 模块混淆规则 ----
 
 # Modern Xposed API 官方推荐的保留规则：
 # 1. 模块入口类必须保留，且不能被混淆（框架通过 java_init.list 反射实例化）

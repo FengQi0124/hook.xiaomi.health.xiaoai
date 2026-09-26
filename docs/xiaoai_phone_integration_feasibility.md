@@ -513,7 +513,7 @@ com/xiaomi/aivsbluetoothsdk/
 
 **Files:**
 
-- Modify: `app/src/main/kotlin/llm/miband/littlewhite/hook/MiHealthHook.kt`（临时诊断日志，验证后回滚）
+- Modify: `app/src/main/kotlin/com/zeroone01/xiaoai/hook/MiHealthHook.kt`（临时诊断日志，验证后回滚）
 
 - [ ] **Step 1: 在拦截器入口加"命中"日志**
 
@@ -588,9 +588,9 @@ adb shell "for p in $(pidof com.mi.health com.miui.voiceassist); do echo PID=$p;
 
 - Modify: `app/src/main/resources/META-INF/xposed/scope.list`（追加 `com.miui.voiceassist`）
 
-- Create: `app/src/main/kotlin/llm/miband/littlewhite/hook/VoiceAssistProbe.kt`
+- Create: `app/src/main/kotlin/com/zeroone01/xiaoai/hook/VoiceAssistProbe.kt`
 
-- Modify: `app/src/main/kotlin/llm/miband/littlewhite/MainModule.kt`（按宿主分派）
+- Modify: `app/src/main/kotlin/com/zeroone01/xiaoai/MainModule.kt`（按宿主分派）
 
 - [ ] **Step 1: 扩展作用域** —— `scope.list` 追加一行 `com.miui.voiceassist`
 
@@ -641,7 +641,7 @@ adb logcat -c; adb logcat -s RingOnLLM:V | Select-String "VAProbe"
 
 **Files:**
 
-- Create: `app/src/main/kotlin/llm/miband/littlewhite/hook/VoiceAssistHook.kt`
+- Create: `app/src/main/kotlin/com/zeroone01/xiaoai/hook/VoiceAssistHook.kt`
 
 - Modify: `MainModule.kt`、`config/ConfigKeys.kt`（新增 `intercept_phone_xiaoai` 开关）
 
@@ -722,7 +722,7 @@ adb shell "su -c 'ls /data/data/com.miui.voiceassist/files'"
 写入 `/data/data/com.miui.voiceassist/files/agents/com.mi.health/config.json`：
 
 ```json
-{ "id":"com.mi.health", "name":"环上LLM", "enabled":true,
+{ "id":"com.mi.health", "name":"手环小爱AI增强", "enabled":true,
   "type":"builtin", "execution_mode":"main",
   "prompt_file":"prompt.md", "tools_allowlist":[], "preload_tools":[],
   "max_iterations":3, "version":"0.0.1" }

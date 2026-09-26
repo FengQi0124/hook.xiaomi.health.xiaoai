@@ -721,8 +721,8 @@ private fun ConfigTabContent(
 
             // ---------- 分组 2：配置（0.6.0-beta1 真机反馈）----------
             // 原「回答模式」栏改名「配置」：切换模型提示词 + 系统提示词（后者从「生成参数」移来）；
-            // 两条「模式持续时长」输入框删除（小爱/LLM 时长不再提供设置入口，
-            // ConfigStore 的取值与默认值保留，ModeState 仍按默认时长工作）。
+            // 两条「模式持续时长」设置整体删除（0.7.2.1 连配置键/取值/到期回退一并移除）：
+            // 语音切换后的模式长期生效，不再有「X 分钟后自动恢复」。
             item(key = "configTitle") {
                 SmallTitle("配置")
             }
@@ -816,6 +816,19 @@ private fun ConfigTabContent(
                             label = "上下文长度（消息条数）",
                             initialValue = config.getContextLength(),
                             onValueChange = { config.setContextLength(it) },
+                        )
+                        // —— 省 token 说明：历史是每轮原样回传的，条数直接决定花费 ——
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                        Text(
+                            text = "省 token：上下文条数越少越便宜（默认 4 条，且单次最多回传 1200 字历史）；" +
+                                "选 independent 不带历史最省。",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 12.dp),
+                            fontSize = 12.sp,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -1516,8 +1529,8 @@ private fun RowDragHandle(actions: RowHandleActions, highlighted: Boolean) {
 }
 
 /**
- * 模型行内联的**精简**编辑界面（点三横展开，0.5.1-beta1）：
- * 只露 Base URL / 模型名 / API Key 三个输入框 + 删除·取消·保存，整块只有三行输入框高，
+ * 模型行内联的**精简**编辑界面（点三横展开）：
+ * 只露 显示名称 / Base URL / 模型名 / API Key 四个输入框 + 删除·取消·保存，
  * 展开在该行下方、不弹任何浮层；预设 chips / API 类型 / 自动拼接等大件只留在「添加模型」对话框里。
  * 排序走长按三横拖动，故这里不再放上移/下移。
  */
@@ -1528,6 +1541,7 @@ private fun ModelInlineEdit(
     onSave: (ModelEntry) -> Unit,
     onDelete: () -> Unit,
 ) {
+    var name by remember(entry.id) { mutableStateOf(entry.name) }
     var baseUrl by remember(entry.id) { mutableStateOf(entry.baseUrl) }
     var apiKey by remember(entry.id) { mutableStateOf(entry.apiKey) }
     var model by remember(entry.id) { mutableStateOf(entry.model) }
@@ -1537,6 +1551,13 @@ private fun ModelInlineEdit(
             .fillMaxWidth()
             .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
     ) {
+        TextField(
+            value = name,
+            onValueChange = { name = it },
+            label = "显示名称",
+            singleLine = true,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
         TextField(
             value = baseUrl,
             onValueChange = { baseUrl = it },
@@ -1578,6 +1599,7 @@ private fun ModelInlineEdit(
                 onClick = {
                     onSave(
                         entry.copy(
+                            name = name.trim(),
                             baseUrl = baseUrl.trim(),
                             apiKey = apiKey.trim(),
                             model = model.trim(),

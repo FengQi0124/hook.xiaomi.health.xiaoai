@@ -8,7 +8,6 @@ plugins {
 }
 
 // 手环小爱 AI 增强 —— LSPosed 模块（Modern Xposed API 102）
-// 0.5.0-beta 起：基于 mi-band-ai（环上LLM）工程重构，身份（包名/签名/版本）换成用户的。
 android {
     namespace = "com.zeroone01.xiaoai"
     // AGP 9.x 的 compileSdk 表达式 DSL。
@@ -23,8 +22,8 @@ android {
         applicationId = "com.zeroone01.xiaoai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 600
-        versionName = "0.6.0-beta1"
+        versionCode = 7021
+        versionName = "0.7.2.1"
         // 编译日期（首页「关于」展示）：随构建日期生成
         buildConfigField(
             "String",

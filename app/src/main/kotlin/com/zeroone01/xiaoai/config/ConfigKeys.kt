@@ -62,8 +62,6 @@ object ConfigKeys {
     const val VALUE_MODE_XIAOAI = "xiaoai"
 
     const val KEY_DEFAULT_MODE = "default_mode"
-    const val KEY_XIAOAI_MODE_MS = "xiaoai_mode_ms"
-    const val KEY_LLM_MODE_MS = "llm_mode_ms"
     const val KEY_CMD_TO_LLM = "cmd_to_llm"
     const val KEY_CMD_TO_XIAOAI = "cmd_to_xiaoai"
     const val KEY_CMD_QUERY_MODE = "cmd_query_mode"
@@ -139,8 +137,19 @@ object ConfigKeys {
     /** 会话窗口时长（毫秒）：窗口内连续 Toast 视为同一会话 */
     const val DEFAULT_CONTEXT_WINDOW_MS = 60000
 
-    /** 单次请求携带的最大上下文消息条数 */
-    const val DEFAULT_CONTEXT_LENGTH = 10
+    /**
+     * 单次请求携带的最大上下文消息条数（0.7.2.1 起默认 4，省 token：）。
+     * 每条历史都是「整轮问答」原样回传，条数越多每次提问的 prompt 越贵；
+     * 想要更长上下文可在「会话设置」里调大，改成 `independent` 则完全不带历史。
+     */
+    const val DEFAULT_CONTEXT_LENGTH = 4
+
+    /**
+     * 历史回传的字符预算上限（LlmClient 二次裁剪用）。
+     * 条数只管「带几轮」，这里管「最多花多少」：即便把上下文条数调到很大，
+     * 单次请求回传的历史也不会超过该字符数，token 成本有上界。
+     */
+    const val HISTORY_CHAR_LIMIT = 1200
 
     /** LLM 请求超时（毫秒） */
     const val DEFAULT_TIMEOUT_MS = 8000
@@ -179,12 +188,6 @@ object ConfigKeys {
     // ---------- 回答模式默认值 ----------
     /** 默认回答模式："llm"（LLM 接管）/"xiaoai"（小爱接管） */
     const val DEFAULT_DEFAULT_MODE = "llm"
-
-    /** 切到小爱后的持续时长（毫秒）：10 分钟 */
-    const val DEFAULT_XIAOAI_MODE_MS = 600_000L
-
-    /** 切到 LLM 后的持续时长（毫秒）：0 = 永久（LLM 为默认模式，切回即长期） */
-    const val DEFAULT_LLM_MODE_MS = 0L
 
     /** 切到 LLM 的默认指令词库（换行分隔） */
     const val DEFAULT_CMD_TO_LLM =

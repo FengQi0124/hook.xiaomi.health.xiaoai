@@ -5,6 +5,7 @@ import android.net.Uri
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import com.zeroone01.xiaoai.config.ConfigKeys
 import com.zeroone01.xiaoai.config.ConfigStore
 import com.zeroone01.xiaoai.config.StatsContentProvider
 import com.zeroone01.xiaoai.config.StatsStore
@@ -358,10 +359,13 @@ object LlmClient {
         var history = session.messages.takeLast(ctxLen)
         // 裁剪后若以 assistant 开头则再丢一条：兼容 Anthropic 要求消息以 user 起始且交替
         if (history.firstOrNull()?.role == "assistant") history = history.drop(1)
+        // 省 token：条数之外再按字符预算封顶（超预算从最旧开始丢），
+        // 即使把上下文条数调得很大，单次请求回传的历史也有成本上界。
+        history = clipHistoryByChars(history, ConfigKeys.HISTORY_CHAR_LIMIT)
         LogCollector.i(
             TAG,
             "会话${if (keepHistory) "续接" else "新开"}（mode=$ctxMode, 距上次 ${now - session.lastAccessMs}ms）" +
-                "携带历史 ${history.size} 条 dialogId=$dialogId",
+                "携带历史 ${history.size} 条（${history.sumOf { it.content.length }} 字） dialogId=$dialogId",
         )
         messages.addAll(history)
         messages.add(ChatMessage("user", text))
@@ -407,6 +411,28 @@ object LlmClient {
         val promptTokens: Int = 0,
         val completionTokens: Int = 0,
     )
+
+    /**
+     * 历史按**字符预算**二次裁剪（省 token）。
+     * [ConfigKeys.DEFAULT_CONTEXT_LENGTH] 这类条数上限管「带几轮」，这里管「最多花多少」：
+     * 从最新往最旧累加，超出 [charBudget] 就把更早的丢掉；
+     * 至少保留最近 1 条，并保证结果仍以 user 起始（Anthropic 要求 user/assistant 交替）。
+     */
+    private fun clipHistoryByChars(history: List<ChatMessage>, charBudget: Int): List<ChatMessage> {
+        if (charBudget <= 0) return emptyList()
+        if (history.isEmpty()) return history
+        var used = 0
+        var firstKept = history.size - 1          // 至少留最后一条
+        for (i in history.indices.reversed()) {
+            val len = history[i].content.length
+            if (used + len > charBudget && i < history.size - 1) break
+            used += len
+            firstKept = i
+        }
+        var clipped = history.subList(firstKept, history.size)
+        if (clipped.firstOrNull()?.role == "assistant") clipped = clipped.drop(1)
+        return clipped
+    }
 
     /**
      * 裁剪会话历史：只保留最近 maxContext 条；丢最旧时避免以 assistant 开头，

@@ -196,14 +196,6 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
         prefs.getString(ConfigKeys.KEY_DEFAULT_MODE, ConfigKeys.DEFAULT_DEFAULT_MODE)
             ?: ConfigKeys.DEFAULT_DEFAULT_MODE
 
-    /** 切到小爱后的持续时长（毫秒），0 = 永久 */
-    fun getXiaoaiModeMs(): Long =
-        prefs.getLong(ConfigKeys.KEY_XIAOAI_MODE_MS, ConfigKeys.DEFAULT_XIAOAI_MODE_MS)
-
-    /** 切到 LLM 后的持续时长（毫秒），0 = 永久 */
-    fun getLlmModeMs(): Long =
-        prefs.getLong(ConfigKeys.KEY_LLM_MODE_MS, ConfigKeys.DEFAULT_LLM_MODE_MS)
-
     /**
      * 切到 LLM 的指令词库：按行拆分、trim、去空；
      * 用户未配置（空串）时回退默认词库。
@@ -480,16 +472,6 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
 
     fun setDefaultMode(v: String) {
         prefs.edit().putString(ConfigKeys.KEY_DEFAULT_MODE, v).apply()
-    }
-
-    /** 切到小爱的持续时长（毫秒），0 = 永久 */
-    fun setXiaoaiModeMs(v: Long) {
-        prefs.edit().putLong(ConfigKeys.KEY_XIAOAI_MODE_MS, v).apply()
-    }
-
-    /** 切到 LLM 的持续时长（毫秒），0 = 永久 */
-    fun setLlmModeMs(v: Long) {
-        prefs.edit().putLong(ConfigKeys.KEY_LLM_MODE_MS, v).apply()
     }
 
     /** 切到 LLM 的指令词库（多行文本存储，自动过滤空行） */
