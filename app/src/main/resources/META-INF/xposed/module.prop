@@ -1,7 +1,7 @@
 id=com.zeroone01.xiaoai
 name=手环小爱 AI 增强
 version=0.7.2.1
-versionCode=7021
+versionCode=721
 author=ZeroOne01
 description=把小米运动健康里手环/手表的小爱同学接入第三方 AI（DeepSeek / 智谱 / 通义千问 / Kimi 等 OpenAI 兼容），可在手环上语音切换模型，智能家居指令原样直通。
 

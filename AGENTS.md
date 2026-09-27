@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-**项目名称**：手环小爱 AI 增强（包名 `com.zeroone01.xiaoai`，模块 ID `com.zeroone01.xiaoai`，versionName `0.7.2.1`）
+**项目名称**：手环小爱 AI 增强（包名 `com.zeroone01.xiaoai`，模块 ID `com.zeroone01.xiaoai`，versionName `0.7.2.1`，versionCode 721）
 
 > 多模型切换菜单、提供方预设、语音切换模型、智能家居指令直通；0.5.1-beta1 起自绘应用图标（手环 + AI 火花），并移除「我的」页入口注入、「启用模块」开关与预测性返回。
 
@@ -227,9 +227,9 @@ hook.xiaomi.health.xiaoai/
 
 ## 当前状态
 
-- **当前「手环小爱 AI 增强」（0.7.2.1）**：
+- **当前「手环小爱 AI 增强」（0.7.2.1，versionCode 721）**：
 
-  - 身份：包名 `com.zeroone01.xiaoai`、用户签名 `app/xiaoai.jks`（alias `xiaoai`）、versionName `0.7.2.1`（versionCode 7021，`module.prop` 同步 0.7.2.1/7021）、桌面 `MAIN/LAUNCHER` 入口；
+  - 身份：包名 `com.zeroone01.xiaoai`、用户签名 `app/xiaoai.jks`（alias `xiaoai`）、versionName `0.7.2.1` + versionCode **721**（`module.prop` 同步 0.7.2.1/721）、桌面 `MAIN/LAUNCHER` 入口；**GitHub 上旧的 0.7.2.1/7021 release 与 tag 已删除，由本包替换**（721 < 7021 属降级，覆盖安装需 `adb install -d -r` 或先卸载）；
 
   - **应用图标重绘（当前）**：删除原项目 5 张密度 PNG（`mipmap-*/ic_launcher.png`），改为自绘自适应图标 `res/mipmap-anydpi-v26/ic_launcher.xml`（背景青→蓝渐变 `drawable/ic_launcher_background.xml` + 前景「运动手表 + AI 火花」`drawable/ic_launcher_foreground.xml`：竖表带 + 白色圆盘 + 盘内蓝色四角火花，全部落在中心 66dp 安全区，含 `monochrome` 主题图标层）；
 
@@ -239,7 +239,7 @@ hook.xiaomi.health.xiaoai/
 
   - **预测性返回功能删除（当前）**：Manifest 移除 `android:enableOnBackInvokedCallback`、`SettingsActivity` 删除反射切换（原 `setEnableOnBackInvokedCallbackCompat`，含 `privateFlagsExt` 兜底）、主题页删除开关、`KEY_ENABLE_PREDICTIVE_BACK` 等配置键删除；
 
-  - 多模型（`ModelEntry` + `KEY_MODEL_LIST` JSON，apiKey 落盘加密 / 进程内明文）：设置页「模型列表」分组第 1 行固定「小爱同学」，**行点击即激活**（小爱行 → `active_model=xiaoai` + `default_mode=xiaoai`，模型行 → `active_model=<id>` + `default_mode=llm`）；**用户模型行行尾一个「三横」手柄**（`RowDragHandle`）：**点按**使该行**行内展开精简编辑界面**（`AnimatedVisibility` 展开/收起动画 + `ModelInlineEdit`：只露 **显示名称 / Base URL / 模型名 / API Key** 四栏 + 删除·取消·保存，保存即 `setModelList`，整块不弹任何浮层），**长按 500ms**（`HANDLE_LONG_PRESS_MS` + `LaunchedEffect` 计时 + 震动反馈）进入排序态、拖动行变圆角主题色卡片跟手上下移动、松手动画吸附后 `setModelList` 持久化（上移/下移按钮与「⋮」按钮、`ModelMoreMenuDialog` 浮层菜单、编辑对话框调用点均已删）；「添加/编辑」对话框含常见提供方预设 chips；首次进入若无 `KEY_ACTIVE_MODEL` 且列表为空，用 legacy API 字段播种一条（迁移）；
+  - 多模型（`ModelEntry` + `KEY_MODEL_LIST` JSON，apiKey 落盘加密 / 进程内明文）：设置页「模型列表」分组第 1 行固定「小爱同学」，**行点击即激活**（小爱行 → `active_model=xiaoai` + `default_mode=xiaoai`，模型行 → `active_model=<id>` + `default_mode=llm`）；**用户模型行行尾一个「三横」手柄**（`RowDragHandle`）：**点按**使该行**行内展开精简编辑界面**（`AnimatedVisibility` 展开/收起动画 + `ModelInlineEdit`：只露 **显示名称 / Base URL / 模型名 / API Key** 四栏 + 删除·取消·保存，保存即 `setModelList`，整块不弹任何浮层），**长按 500ms**（`HANDLE_LONG_PRESS_MS` + `LaunchedEffect` 计时 + 震动反馈）进入排序态、拖动行变圆角主题色卡片跟手上下移动（位移用 `drawWithContent + withTransform` 绘制级平移，不进输入坐标系；落位阈值约 0.38 行）、松手动画吸附后 `setModelList` 持久化（上移/下移按钮与「⋮」按钮、`ModelMoreMenuDialog` 浮层菜单、编辑对话框调用点均已删）；「添加/编辑」对话框含常见提供方预设 chips；首次进入若无 `KEY_ACTIVE_MODEL` 且列表为空，用 legacy API 字段播种一条（迁移）；
 
   - `ConfigStore.getBaseUrl/getApiKey/getModel/getApiType/isAppendApiPath` 改为**激活条目优先、回退 legacy 键**，`LlmClient` 每请求实时读取，零改动即支持切模型；
 
@@ -249,7 +249,7 @@ hook.xiaomi.health.xiaoai/
 
   - 「我的」页入口注入：**已整体移除**（`MinePageInjector.kt` 删除、开关与配置键删除），宿主内不再有任何入口，只走桌面图标；
 
-  - 设置页 UI：**3-Tab（首页 / 配置 / 记录）**，Config Tab 依次为「**模型列表**」（小爱同学 → 居中的「+ 添加模型」，`ModelListSection`）、「**其它**」（测试模型可用性 + 智能家居指令直通，`MiscSection`，原「模型」卡底部两行拆出）、「**配置**」（切换模型提示词 + 系统提示词，0.6.0-beta1 由原「回答模式」栏改名，系统提示词从「生成参数」移入；「小爱/LLM 模式持续时长」在 0.7.2.1 已整个功能删除）、「生成参数」（超时 / 最大 Token）、「会话设置」（含省 token 说明脚注）；
+  - 设置页 UI：**3-Tab（首页 / 配置 / 记录）**，Config Tab 依次为「**模型列表**」（小爱同学 → 居中的「+ 添加模型」，`ModelListSection`）、「**其它**」（测试模型可用性 + 智能家居指令直通，`MiscSection`，原「模型」卡底部两行拆出）、「**配置**」（切换模型提示词 + 系统提示词，0.6.0-beta1 由原「回答模式」栏改名，系统提示词从「生成参数」移入，versionCode 721 起**每栏各带一个「保存」按钮**、打字只进缓冲点保存才落盘；「小爱/LLM 模式持续时长」在 0.7.2.1 已整个功能删除）、「生成参数」（超时 / 最大 Token）、「会话设置」（含省 token 说明脚注）；
 
   - 第二轮精简（当前）：状态页改名「首页」并删「框架信息 / Hook 运行状态 / 手机端小爱」三卡，主卡片文案「已连接 LSPosed」→「工作中」；原「关于」Tab 删除、内容并入首页（日志导出 / 测试连接 / **项目 GitHub** `https://github.com/FengQi0124/hook.xiaomi.health.xiaoai` / Miuix 链接 / 设置主题 / 版本 + **编译日期**（`BuildConfig.BUILD_TIME`））；删除「用手端小爱回答」与「手端引擎」（`getUsePhoneXiaoai` 强制 false）、三组旧指令词（LLM/小爱/查询模式，语音切换只走「切换模型」菜单）、「拦截米家(General)」开发中开关（米家控制由 `SmartHomeRules` 直通实现）、全部预设保存/应用 UI（`PresetSection` + `PresetManager.kt` 已删）、「思考模式/思考强度」（`isThinkingMode` 强制 false，实测有 bug）；系统提示词默认含 `{<ModelName>}` 占位符，`ConfigStore.getSystemPrompt()` 发送前替换为激活模型昵称（设置页编辑用 `getSystemPromptRaw()` 读原文）；日志导出文件名前缀 `llm_export_` → `com.zeroone01.xiaoai_export_`；
 
@@ -272,7 +272,9 @@ hook.xiaomi.health.xiaoai/
 
   - 第七轮（0.6.0-beta1，versionCode 600，2026-09-26，真机反馈第三轮）：**① 配置页重新分栏** —— 删掉「回答模式」栏，改名/新建「**配置**」栏：**切换模型提示词**（原「切换模型的指令词」改名）+ **系统提示词**（从「生成参数」移入）合并到同一张卡，`生成参数` 卡只剩 超时时间 / 最大 Token；**② 删除两条时长输入框** —— 「小爱模式持续时长」「LLM 模式持续时长」`NumberInputField` 移除（当轮只去 UI 入口，0.7.2.1 第八轮把配置键/取值/到期回退整套删除）；**③ 「添加模型」行改版** —— 删 `ArrowPreference`（标题 + 长说明），改为整行**水平居中**的 `+ 添加模型`：`MiuixIcons.Add`（`top.yukonga.miuix.kmp.icon.extended.Add`，16dp、primary 色）+ `headline1` 文字，`defaultMinSize(minHeight = 56.dp)` 与偏好行等高，点击仍开 `ModelEditDialog`；**④ 版本号** `0.5.1-beta1`(501) → **`0.6.0-beta1`(600)**（`build.gradle.kts` + `module.prop` 同步，交付包 `F:\hookxiaoai\手环小爱AI增强-0.6.0-beta1.apk`），并立下「功能改动即升号」约定；**⑤ README 重写**（当前版本、配置页结构、本地 + CI 构建方式、版本历史与升号约定）；**⑥ 首次入库并走 CI** —— 本工程此前**从未 git 入库**，远端同名仓库 `FengQi0124/hook.xiaomi.health.xiaoai` 里是旧的 0.1.0-beta16（C++ native hook）代码基线；做法是取远端 `.git` 作为历史、工作区整体替换为本工程后提交、打 tag **`v0.6.0-beta1`**，由 `.github/workflows/build-apk.yml` 构建并自动发布 GitHub Release（`app/xiaoai.jks` 与远端同一份，已在库内，CI 签名与本地一致）。
 
-  - 第八轮（**当前，0.7.2.1**，versionCode 7021，2026-09-26，真机反馈第四轮）：**① 行内编辑补回「显示名称」** —— `ModelInlineEdit` 四栏：显示名称 / Base URL / 模型名 / API Key（用户自定义的模型名随时可改，即模型菜单里显示的昵称）；**② 「小爱/LLM 模式持续时长」当从没存在过** —— `ConfigKeys.KEY_XIAOAI_MODE_MS/KEY_LLM_MODE_MS` 与两处默认值、`ConfigStore.getXiaoaiModeMs/setXiaoaiModeMs/getLlmModeMs/setLlmModeMs`、`ModeState` 的 `deadlineMs` 过期判断与「X 分钟后自动恢复」文案全部删除；语音切换后**长期生效**（`buildConfirmation` 固定「（长期有效）」），只有宿主进程重启才回到设置页选定的默认模式；**③ 省 token**（用户按量付费，token 涨价）：`DEFAULT_CONTEXT_LENGTH` **10 → 4**；新增 `ConfigKeys.HISTORY_CHAR_LIMIT = 1200`，`LlmClient.clipHistoryByChars` 对回传历史做**字符预算**二次裁剪（条数管「带几轮」、预算管「最多花多少」，上下文条数调大也有成本上界）；「会话设置」卡加省 token 说明脚注；**④ 文档去上游出处** —— README / AGENTS / `module.prop` / `proguard-rules.pro` / CI artifact 名（统一改 `xiaoai-*`）/ `docs/*` 全部去掉上游工程名与出处表述（`docs/xiaoai_phone_integration_feasibility.md` 内的旧源码路径同步改成 `com/zeroone01/xiaoai`），并删除陈旧的 `docs/superpowers/` 规划文档（100KB+，纯属 Agent 上下文浪费）；**⑤ 版本号** `0.6.0-beta1`(600) → **`0.7.2.1`(7021)**（`build.gradle.kts` + `module.prop` 同步）。
+  - 第八轮（0.7.2.1，versionCode 7021，2026-09-26，真机反馈第四轮）：**① 行内编辑补回「显示名称」** —— `ModelInlineEdit` 四栏：显示名称 / Base URL / 模型名 / API Key（用户自定义的模型名随时可改，即模型菜单里显示的昵称）；**② 「小爱/LLM 模式持续时长」当从没存在过** —— `ConfigKeys.KEY_XIAOAI_MODE_MS/KEY_LLM_MODE_MS` 与两处默认值、`ConfigStore.getXiaoaiModeMs/setXiaoaiModeMs/getLlmModeMs/setLlmModeMs`、`ModeState` 的 `deadlineMs` 过期判断与「X 分钟后自动恢复」文案全部删除；语音切换后**长期生效**（`buildConfirmation` 固定「（长期有效）」），只有宿主进程重启才回到设置页选定的默认模式；**③ 省 token**（用户按量付费，token 涨价）：`DEFAULT_CONTEXT_LENGTH` **10 → 4**；新增 `ConfigKeys.HISTORY_CHAR_LIMIT = 1200`，`LlmClient.clipHistoryByChars` 对回传历史做**字符预算**二次裁剪（条数管「带几轮」、预算管「最多花多少」，上下文条数调大也有成本上界）；「会话设置」卡加省 token 说明脚注；**④ 文档去上游出处** —— README / AGENTS / `module.prop` / `proguard-rules.pro` / CI artifact 名（统一改 `xiaoai-*`）/ `docs/*` 全部去掉上游工程名与出处表述（`docs/xiaoai_phone_integration_feasibility.md` 内的旧源码路径同步改成 `com/zeroone01/xiaoai`），并删除陈旧的 `docs/superpowers/` 规划文档（100KB+，纯属 Agent 上下文浪费）；**⑤ 版本号** `0.6.0-beta1`(600) → **`0.7.2.1`(7021)**（`build.gradle.kts` + `module.prop` 同步）。
+
+  - 第九轮（**当前，0.7.2.1，versionCode 721**，2026-09-27，真机反馈第五轮）：**① 提示词保存功能** —— 「配置」卡两条提示词改用 `PromptFieldWithSave`，**每栏各带一个「保存」按钮**：打字只改本地缓冲，点保存才写配置，按钮随后 1.5s 显示「已保存」（原先边打字边落盘，敲错一个字就改了生效中的提示词）；**② 修拖动排序「能拖但松手弹回原位」** —— 拖动行位移从 `Modifier.graphicsLayer { translationY }` 改为 **`drawWithContent + withTransform` 绘制级平移**（graphicsLayer 会连带平移手柄的输入坐标，行一边动、手柄读到的位移被反向抵消一半，累积值到不了换槽线），落位阈值由半行放宽到约 **0.38 行**（`DROP_SLOT_SCALE = 1.3f`，`targetSlotOf()` 统一给「拖动中目标槽位」和 `endDrag` 落位用），`endDrag` 增加 `LogCollector.i("ModelList", "落位 …")` 日志（origin / offset / h / target / persist）便于真机复盘；**③ 版本号** `0.7.2.1`(7021) → **`0.7.2.1`(721)** —— versionCode 按用户指定写 `0721`；versionName 曾短暂叫 `0.7.2.1a`，按用户要求**去掉 a 仍叫 0.7.2.1**，并**删掉 GitHub 上原有的 `v0.7.2.1`(7021) release 与 tag、由本包替换**（721 < 7021 属降级，用户手机可降级安装；覆盖安装用 `adb install -d -r`）。
 
 - 外部 LLM 档：功能全部实现，`assembleRelease` 通过，端到端真机验证通过；
 

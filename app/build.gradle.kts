@@ -22,7 +22,7 @@ android {
         applicationId = "com.zeroone01.xiaoai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7021
+        versionCode = 721
         versionName = "0.7.2.1"
         // 编译日期（首页「关于」展示）：随构建日期生成
         buildConfigField(

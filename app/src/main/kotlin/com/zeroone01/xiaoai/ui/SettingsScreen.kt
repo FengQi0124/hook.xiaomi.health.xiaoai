@@ -48,9 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
@@ -67,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import io.github.libxposed.service.XposedService
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.zeroone01.xiaoai.BuildConfig
@@ -735,23 +738,23 @@ private fun ConfigTabContent(
                         // 「切换到 LLM / 切换到小爱 / 查询当前模式」三组指令词与「拦截米家(General)」
                         // 开发中开关已删除（0.5.0-beta）：模式切换只走「切换模型」菜单，
                         // 米家/设备控制由 SmartHomeRules 词表直通原生链路（不再占位开发中）。
-                        TextInputField(
+                        // 0.7.2.1（721）：两条提示词改成「先输入、点保存才写入」，每栏各带一个保存按钮
+                        //（原来是边打字边写，敲错一个字就直接改了生效中的提示词）。
+                        PromptFieldWithSave(
                             initialValue = config.getCmdSwitchModel().joinToString("\n"),
                             label = "切换模型提示词",
-                            singleLine = false,
                             placeholder = "每行一个，命中后手环进入选模型菜单",
-                            onValueChange = { text ->
+                            onSave = { value ->
                                 config.setCmdSwitchModel(
-                                    text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+                                    value.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
                                 )
                             },
                         )
-                        TextInputField(
+                        PromptFieldWithSave(
                             initialValue = config.getSystemPromptRaw(),
                             label = "系统提示词",
-                            singleLine = false,
                             placeholder = "如：你是{<ModelName>}，通过小米手环回答用户问题…（{<ModelName>} 发送前自动替换为模型昵称）",
-                            onValueChange = { config.setSystemPrompt(it) },
+                            onSave = { value -> config.setSystemPrompt(value) },
                         )
                     }
                 }
@@ -1034,6 +1037,17 @@ private fun ModelListSection(
         lastExpandedId = expandedId
     }
 
+    /**
+     * 拖动位移 → 目标槽位（0.7.2.1/721）：位移达到约 0.38 行（0.5 / [DROP_SLOT_SCALE]）即算换槽。
+     * 阈值比原来的「半行」更松，抵消真机上手指跟手误差，落位更稳、少出现「松手弹回原位」。
+     */
+    fun targetSlotOf(from: Int, offsetPx: Float): Int {
+        val hh = blockHeightPx
+        if (hh <= 0f || from !in modelList.indices) return from
+        return (from + (offsetPx / hh * DROP_SLOT_SCALE).roundToInt())
+            .coerceIn(0, modelList.lastIndex)
+    }
+
     /** 松手落位：先动画吸到整格，再一次性重排并持久化，避免半行跳变 */
     fun endDrag() {
         val origin = dragIndex
@@ -1042,11 +1056,18 @@ private fun ModelListSection(
         if (origin < 0) return
         val h = blockHeightPx
         if (h <= 0f || origin !in modelList.indices) {
+            // 块高没测到（理论上拖不动才走这里）：直接放弃并记日志，方便真机排查
+            LogCollector.i("ModelList", "落位中止 origin=$origin h=$h size=${modelList.size}")
             dragIndex = -1
             dragOffset = 0f
             return
         }
-        val target = (origin + (dragOffset / h).roundToInt()).coerceIn(0, modelList.lastIndex)
+        val target = targetSlotOf(origin, dragOffset)
+        LogCollector.i(
+            "ModelList",
+            "落位 origin=$origin offset=${dragOffset}px h=${h}px " +
+                "target=$target persist=${target != origin}",
+        )
         val snapped = (target - origin) * h
         val from = dragOffset
         settleJob.value = scope.launch {
@@ -1082,7 +1103,7 @@ private fun ModelListSection(
         val h = blockHeightPx
         val draggingIndex = dragIndex
         val targetIndex = if (draggingIndex >= 0 && h > 0f) {
-            (draggingIndex + (dragOffset / h).roundToInt()).coerceIn(0, modelList.lastIndex)
+            targetSlotOf(draggingIndex, dragOffset)
         } else {
             -1
         }
@@ -1112,7 +1133,15 @@ private fun ModelListSection(
                     modifier = Modifier
                         .fillMaxWidth()
                         .zIndex(if (sorting) 1f else 0f)
-                        .graphicsLayer { translationY = offsetY }
+                        // 0.7.2.1（721）：拖动位移改成「只画不排」的绘制平移。
+                        // graphicsLayer 会连带把手柄的输入坐标一起平移 —— 行一边平移、
+                        // 手柄读到的手指位移就被反向抵消掉一半，累积出来的位移到不了半行，
+                        // 松手时算不出换槽就只能弹回原位；绘制级 translate 不进输入坐标系，
+                        // 手指移动多少就累积多少，行真正跟手。
+                        .drawWithContent {
+                            val content = this
+                            withTransform({ translate(0f, offsetY) }) { content.drawContent() }
+                        }
                         .onSizeChanged { size ->
                             val measured = size.height.toFloat()
                             // 展开中的行块更高、收起动画中的高度是过渡值，都不参与块高实测
@@ -1340,6 +1369,12 @@ private class RowHandleActions(
 
 /** 手柄长按阈值：按住 500ms 进入排序态（像拖文件一样把行「拖出来」） */
 private const val HANDLE_LONG_PRESS_MS = 500L
+
+/**
+ * 落位阈值系数（0.7.2.1/721）：`round(位移/行高 × 1.3)`，
+ * 即位移约 0.38 行就换槽（原为 0.5 行），真机上更容易落位不回弹。
+ */
+private const val DROP_SLOT_SCALE = 1.3f
 
 /**
  * 单行模型条目（0.5.1-beta1 三横手柄 + 行内展开）：
@@ -1824,6 +1859,53 @@ private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
 // ====================================================================
 // 输入组件 —— 自定义文本/数字/可空输入框
 // ====================================================================
+
+/**
+ * 提示词输入 + **该栏自己的「保存」按钮**（0.7.2.1/721）。
+ *
+ * 打字只改本地缓冲 [text]，点「保存」才写入配置；保存后按钮短暂变成「已保存」（1.5s），
+ * 再有改动则回到「保存」。原来是边打字边落盘，敲错一个字就直接改了生效中的提示词，
+ * 现在必须显式确认才生效。
+ */
+@Composable
+private fun PromptFieldWithSave(
+    initialValue: String,
+    label: String,
+    placeholder: String,
+    onSave: (String) -> Unit,
+) {
+    var text by remember(initialValue) { mutableStateOf(initialValue) }
+    var saved by remember { mutableStateOf(false) }
+    LaunchedEffect(saved) {
+        if (saved) {
+            delay(1500)
+            saved = false
+        }
+    }
+    TextInputField(
+        initialValue = initialValue,
+        label = label,
+        singleLine = false,
+        placeholder = placeholder,
+        onValueChange = { input -> text = input }, // 只进缓冲，不落盘
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(end = 8.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(
+            text = if (saved) "已保存" else "保存",
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+            onClick = {
+                onSave(text)
+                saved = true
+            },
+        )
+    }
+}
 
 /**
  * 单行文本输入：Base URL / 模型 等字符串配置。
